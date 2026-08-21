@@ -1,0 +1,17 @@
+# 1. 默认忽略根目录下的一切内容
+/*
+
+# 2. 允许追踪 .gitignore 自身
+!.gitignore
+
+# 3. 显式放行指定的文件
+!build.ps1
+!build.py
+!CMakeLists.txt
+
+# 4. 显式放行指定的目录（以及目录下的所有子内容）
+!build/
+!font_extract/
+!include/
+!libs/
+!src/
