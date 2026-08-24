@@ -143,6 +143,7 @@ extern "C"
       MiniLength len_gap; /* flex gap (row/column-gap share this) */
       int align_self;     /* -1=auto (use align_items), else 0..4 like align_items */
       uint8_t font_set;   /* font-size explicitly set (else keep the default) */
+      uint8_t color_set;  /* color explicitly set (else inherit from parent)   */
 
       /* --- New Modern CSS Properties --- */
       float border_radius;
@@ -359,9 +360,10 @@ extern "C"
       struct MiniNode *prev_sibling;
       struct MiniNode *next_sibling;
 
-      /* Pseudo element nodes (::before, ::after) */
+      /* Pseudo element nodes (::before, ::after, ::placeholder) */
       struct MiniNode *pseudo_before;
       struct MiniNode *pseudo_after;
+      struct MiniNode *pseudo_placeholder;
 
       /* Scoped CSS custom properties */
       MiniNodeVar *vars;

@@ -550,6 +550,30 @@ static void glfw_fb_size_cb(GLFWwindow *win, int w, int h)
     mini_events_handle_resize(app->events, w, h);
 }
 
+static void glfw_window_focus_cb(GLFWwindow *win, int focused)
+{
+    MiniApp *app = (MiniApp *)glfwGetWindowUserPointer(win);
+    if (!app || !app->events)
+        return;
+    if (!focused)
+    {
+        mini_events_release_capture(app->events);
+        g_input_dirty = 1;
+    }
+}
+
+static void glfw_cursor_enter_cb(GLFWwindow *win, int entered)
+{
+    MiniApp *app = (MiniApp *)glfwGetWindowUserPointer(win);
+    if (!app || !app->events)
+        return;
+    if (!entered)
+    {
+        mini_events_release_capture(app->events);
+        g_input_dirty = 1;
+    }
+}
+
 static void gesture_cb(MiniEventState *st, const char *action_js, void *ud)
 {
     (void)st;
@@ -609,16 +633,7 @@ MiniResult mini_app_create(const MiniWindowConfig *cfg, MiniApp **out)
         };
 
         int pri_loaded = 0;
-        for (size_t i = 0; i < sizeof(local_cands) / sizeof(local_cands[0]); i++)
-        {
-            if (mini_renderer_load_font(app->r, local_cands[i]) == 0)
-            {
-                fprintf(stderr, "[app] Primary font loaded (local): %s\n", local_cands[i]);
-                pri_loaded = 1;
-                break;
-            }
-        }
-        if (!pri_loaded && win_dir[0])
+        if (win_dir[0])
         {
             char pbuf[576];
             for (size_t i = 0; i < sizeof(pri_names) / sizeof(pri_names[0]); i++)
@@ -627,6 +642,18 @@ MiniResult mini_app_create(const MiniWindowConfig *cfg, MiniApp **out)
                 if (mini_renderer_load_font(app->r, pbuf) == 0)
                 {
                     fprintf(stderr, "[app] Primary font loaded: %s\n", pbuf);
+                    pri_loaded = 1;
+                    break;
+                }
+            }
+        }
+        if (!pri_loaded)
+        {
+            for (size_t i = 0; i < sizeof(local_cands) / sizeof(local_cands[0]); i++)
+            {
+                if (mini_renderer_load_font(app->r, local_cands[i]) == 0)
+                {
+                    fprintf(stderr, "[app] Primary font loaded (local): %s\n", local_cands[i]);
                     pri_loaded = 1;
                     break;
                 }
@@ -711,7 +738,9 @@ MiniResult mini_app_create(const MiniWindowConfig *cfg, MiniApp **out)
         glfwSetCursorPosCallback(win, glfw_cursor_cb);
         glfwSetMouseButtonCallback(win, glfw_mouse_cb);
         glfwSetScrollCallback(win, glfw_scroll_cb);
-    glfwSetFramebufferSizeCallback(win, glfw_fb_size_cb);
+        glfwSetFramebufferSizeCallback(win, glfw_fb_size_cb);
+        glfwSetWindowFocusCallback(win, glfw_window_focus_cb);
+        glfwSetCursorEnterCallback(win, glfw_cursor_enter_cb);
         glfwSetDropCallback(win, glfw_drop_cb);
     }
 
@@ -866,9 +895,17 @@ MiniResult mini_app_run(MiniApp *app)
         {
             app->r->gpu.width = fw;
             app->r->gpu.height = fh;
-            /* a resize re-runs @media breakpoints and reflows the page. */
-            if (app->doc)
+            app->r->vbuf.width = fw;
+            app->r->vbuf.height = fh;
+            if (app->events)
+                mini_events_handle_resize(app->events, fw, fh);
+            else if (app->doc)
+            {
+                app->doc->viewport_w = fw;
+                app->doc->viewport_h = fh;
+                app->doc->dirty = 1;
                 app->doc->layout_dirty = 1;
+            }
         }
 
         double now = glfwGetTime();
@@ -952,28 +989,24 @@ MiniResult mini_app_run(MiniApp *app)
             bg_b = app->doc->root->style.bg_b;
             bg_a = app->doc->root->style.bg_a;
         }
+        /* 1. Clear background */
         mini_renderer_begin_frame(app->r);
         mini_draw_clear(app->r, bg_r, bg_g, bg_b, bg_a);
-        /* expose the live event state to the DOM render pass so the text-node
-           branch can paint the selection highlight */
-        mini_dom_set_render_events(app->events);
-        mini_dom_render_into(app->doc->body, app->r);
         mini_renderer_flush(app->r);
-        /* Restore the WebGL program/VAO/buffer/texture that the JS layer bound,
-           which begin_frame reset to 0 for the legacy glBegin/glEnd DOM pass.
-           Without this, Three.js (which caches GL state) would skip re-binding
-           and rAF drawArrays/drawElements would run against program 0 / VAO 0
-           -> no attributes -> a black canvas (only the very first frame, before
-           any reset, ever rendered). */
-        mini_renderer_restore_webgl(app->r);
-        if (app->diag)
-            mini_diag_section(app->diag, &t, MINI_DIAG_DRAW);
 
-        /* JS frame (rAF): WebGL draws ON TOP of the DOM into the canvas
-           region (gl.viewport is canvas-anchored + scissored). */
+        /* 2. JS frame (rAF): WebGL/Three.js draws into canvas region */
+        mini_renderer_restore_webgl(app->r);
         mini_bridge_fire_raf(app->bridge, now * 1000.0);
         if (app->diag)
             mini_diag_section(app->diag, &t, MINI_DIAG_RAF);
+
+        /* 3. DOM render pass: Renders HTML/CSS elements & overlays ON TOP of WebGL */
+        mini_renderer_begin_frame(app->r);
+        mini_dom_set_render_events(app->events);
+        mini_dom_render_into(app->doc->body, app->r);
+        mini_renderer_flush(app->r);
+        if (app->diag)
+            mini_diag_section(app->diag, &t, MINI_DIAG_DRAW);
 
         /* DevTools Elements Box Model Highlight Overlay (rendered on the very TOP layer) */
         if (app->cdp && mini_cdp_has_overlay(app->cdp))
@@ -1046,7 +1079,23 @@ MiniResult mini_app_run(MiniApp *app)
             if (thumb_h > vh - 10.0f) thumb_h = vh - 10.0f;
             float thumb_y = (app->doc->scroll_y / app->doc->max_scroll_y) * (vh - thumb_h);
             float radii[4] = {3.0f, 3.0f, 3.0f, 3.0f};
-            mini_draw_rect_rounded_corners(app->r, track_x, thumb_y, 6.0f, thumb_h, radii, 1.0f, 1.0f, 1.0f, 0.40f);
+
+            MiniScrollbarState sst = mini_events_get_scrollbar_state(app->events);
+            float alpha = 0.40f;
+            float thumb_w = 6.0f;
+            if (sst == MINI_SCROLLBAR_DRAGGING)
+            {
+                alpha = 0.85f;
+                thumb_w = 8.0f;
+                track_x = vw - 9.0f;
+            }
+            else if (sst == MINI_SCROLLBAR_HOVER)
+            {
+                alpha = 0.65f;
+                thumb_w = 7.0f;
+                track_x = vw - 8.5f;
+            }
+            mini_draw_rect_rounded_corners(app->r, track_x, thumb_y, thumb_w, thumb_h, radii, 1.0f, 1.0f, 1.0f, alpha);
             mini_renderer_flush(app->r);
         }
 

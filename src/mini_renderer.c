@@ -188,10 +188,10 @@ static struct
 static struct
 {
     GLuint src_tex;
-    int src_w, src_h;
     GLuint fbo[3];
     GLuint tex[3];
-    int w[3], h[3];
+    int max_w, max_h;
+    int max_dw, max_dh;
     GLuint noise_tex;
     int inited;
 } g_blur_pool;
@@ -2819,8 +2819,8 @@ static void mini_exec_cmd(MiniRenderer *r, const MiniCmd *c)
     {                                                                     \
         float _sx = (px_val) * m[0] + (py_val) * m[4] + m[12];            \
         float _sy = (px_val) * m[1] + (py_val) * m[5] + m[13];            \
-        float _u = (_sx - (float)vx) / (float)vw;                         \
-        float _v = ((float)r->vbuf.height - _sy - (float)vy) / (float)vh; \
+        float _u = (_sx - (float)vx) / (float)g_blur_pool.max_w;          \
+        float _v = ((float)r->vbuf.height - _sy - (float)vy) / (float)g_blur_pool.max_h; \
         glTexCoord2f(_u, _v);                                             \
         glVertex2f((px_val), (py_val));                                   \
     } while (0)
@@ -2832,147 +2832,10 @@ static void mini_exec_cmd(MiniRenderer *r, const MiniCmd *c)
 #undef EMIT_BACKDROP_UV
                         glEnd();
                     }
-
-                    /* ========================================================== */
-                    /* 2. 注入核心“物理磨砂/噪点”层 (Noise Grain)                     */
-                    /* 浏览器及 macOS 的亚克力质感精髓在于必须有一层极微弱的高频噪点     */
-                    /* ========================================================== */
-                    glEnable(GL_TEXTURE_2D);
-                    glBindTexture(GL_TEXTURE_2D, g_blur_pool.noise_tex);
-
-                    /* 混合比例：4.5% 透明度的噪点即可完美模拟真实喷砂玻璃表面的微小颗粒 */
-                    glColor4f(1.0f, 1.0f, 1.0f, 0.045f);
-
-                    if (has_rounded)
-                    {
-                        glBegin(GL_TRIANGLE_FAN);
-                        float cx = c->x + c->w * 0.5f;
-                        float cy = c->y + c->h * 0.5f;
-                        /* 使用绝对世界坐标 / 128 平铺，保证噪点密度恒定，拉伸框体时颗粒不发生形变放大 */
-                        glTexCoord2f(cx / 128.0f, cy / 128.0f);
-                        glVertex2f(cx, cy);
-
-                        int segs = 16;
-#define EMIT_NOISE_VERTEX(px, py)                   \
-    do                                              \
-    {                                               \
-        glTexCoord2f((px) / 128.0f, (py) / 128.0f); \
-        glVertex2f((px), (py));                     \
-    } while (0)
-
-                        if (r_tl > 0.5f)
-                        {
-                            for (int i = 0; i <= segs; i++)
-                            {
-                                float a = PI + (i * PI / (2.0f * segs));
-                                EMIT_NOISE_VERTEX(c->x + r_tl + cosf(a) * r_tl, c->y + r_tl + sinf(a) * r_tl);
-                            }
-                        }
-                        else
-                        {
-                            EMIT_NOISE_VERTEX(c->x, c->y);
-                        }
-
-                        if (r_tr > 0.5f)
-                        {
-                            for (int i = 0; i <= segs; i++)
-                            {
-                                float a = 1.5f * PI + (i * PI / (2.0f * segs));
-                                EMIT_NOISE_VERTEX(c->x + c->w - r_tr + cosf(a) * r_tr, c->y + r_tr + sinf(a) * r_tr);
-                            }
-                        }
-                        else
-                        {
-                            EMIT_NOISE_VERTEX(c->x + c->w, c->y);
-                        }
-
-                        if (r_br > 0.5f)
-                        {
-                            for (int i = 0; i <= segs; i++)
-                            {
-                                float a = 0.0f + (i * PI / (2.0f * segs));
-                                EMIT_NOISE_VERTEX(c->x + c->w - r_br + cosf(a) * r_br, c->y + c->h - r_br + sinf(a) * r_br);
-                            }
-                        }
-                        else
-                        {
-                            EMIT_NOISE_VERTEX(c->x + c->w, c->y + c->h);
-                        }
-
-                        if (r_bl > 0.5f)
-                        {
-                            for (int i = 0; i <= segs; i++)
-                            {
-                                float a = 0.5f * PI + (i * PI / (2.0f * segs));
-                                EMIT_NOISE_VERTEX(c->x + r_bl + cosf(a) * r_bl, c->y + c->h - r_bl + sinf(a) * r_bl);
-                            }
-                        }
-                        else
-                        {
-                            EMIT_NOISE_VERTEX(c->x, c->y + c->h);
-                        }
-
-                        if (r_tl > 0.5f)
-                        {
-                            float a = PI;
-                            EMIT_NOISE_VERTEX(c->x + r_tl + cosf(a) * r_tl, c->y + r_tl + sinf(a) * r_tl);
-                        }
-                        else
-                        {
-                            EMIT_NOISE_VERTEX(c->x, c->y);
-                        }
-                        glEnd();
-#undef EMIT_NOISE_VERTEX
-                    }
-                    else
-                    {
-                        glBegin(GL_QUADS);
-                        glTexCoord2f(c->x / 128.0f, c->y / 128.0f);
-                        glVertex2f(c->x, c->y);
-                        glTexCoord2f((c->x + c->w) / 128.0f, c->y / 128.0f);
-                        glVertex2f(c->x + c->w, c->y);
-                        glTexCoord2f((c->x + c->w) / 128.0f, (c->y + c->h) / 128.0f);
-                        glVertex2f(c->x + c->w, c->y + c->h);
-                        glTexCoord2f(c->x / 128.0f, (c->y + c->h) / 128.0f);
-                        glVertex2f(c->x, c->y + c->h);
-                        glEnd();
-                    }
-
                     glBindTexture(GL_TEXTURE_2D, 0);
                     glDisable(GL_TEXTURE_2D);
                 }
             }
-        }
-
-        /* 复合滤镜：通过加法混合严格实现 CSS invert(0.2) 的 +0.2 磨砂底灰与淡蓝光晕 */
-        if (invert > 0.0f)
-        {
-            glEnable(GL_BLEND);
-            if (fabsf(invert - 0.5f) < 0.01f)
-            {
-                /* hue-rotate(180deg): 呈现图 2 中柔和的淡紫蓝弥散光 */
-                glBlendFunc(GL_ONE, GL_ONE);
-                glColor4f(0.18f, 0.28f, 0.58f, 1.0f);
-            }
-            else
-            {
-                /* invert(0.2): 将全黑背景提升为高档通透磨砂灰（图 2 质感） */
-                glBlendFunc(GL_ONE, GL_ONE);
-                glColor4f(0.20f, 0.20f, 0.20f, 1.0f);
-            }
-
-            if (has_rounded)
-                draw_rounded_corners_poly(c->x, c->y, c->w, c->h, rads);
-            else
-            {
-                glBegin(GL_QUADS);
-                glVertex2f(c->x, c->y);
-                glVertex2f(c->x + c->w, c->y);
-                glVertex2f(c->x + c->w, c->y + c->h);
-                glVertex2f(c->x, c->y + c->h);
-                glEnd();
-            }
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         }
         break;
     }
@@ -2999,6 +2862,100 @@ static void mini_exec_cmd(MiniRenderer *r, const MiniCmd *c)
         }
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE); /* 恢复 Alpha 写入 */
+        break;
+    }
+    case 22: /* MINI_CMD_TEXTURE_ROUNDED */
+    {
+        glEnable(GL_TEXTURE_2D);
+        glBindTexture(GL_TEXTURE_2D, c->texture_id);
+        glColor4f(1.0f, 1.0f, 1.0f, c->a);
+
+        float r_tl = c->u0, r_tr = c->v0, r_br = c->u1, r_bl = c->v1;
+        float max_r = (c->w < c->h ? c->w : c->h) * 0.5f;
+        if (r_tl > max_r) r_tl = max_r;
+        if (r_tr > max_r) r_tr = max_r;
+        if (r_br > max_r) r_br = max_r;
+        if (r_bl > max_r) r_bl = max_r;
+        if (r_tl < 0) r_tl = 0;
+        if (r_tr < 0) r_tr = 0;
+        if (r_br < 0) r_br = 0;
+        if (r_bl < 0) r_bl = 0;
+
+#define EMIT_TEX_R_VERTEX(px, py)                                         \
+        do {                                                              \
+            glTexCoord2f(((px) - c->x) / c->w, ((py) - c->y) / c->h);     \
+            glVertex2f((px), (py));                                       \
+        } while (0)
+
+        glBegin(GL_TRIANGLE_FAN);
+        EMIT_TEX_R_VERTEX(c->x + c->w * 0.5f, c->y + c->h * 0.5f);
+
+        int segs = 16;
+        if (r_tl > 0.5f)
+        {
+            for (int i = 0; i <= segs; i++)
+            {
+                float a = PI + (i * PI / (2.0f * segs));
+                EMIT_TEX_R_VERTEX(c->x + r_tl + cosf(a) * r_tl, c->y + r_tl + sinf(a) * r_tl);
+            }
+        }
+        else
+        {
+            EMIT_TEX_R_VERTEX(c->x, c->y);
+        }
+
+        if (r_tr > 0.5f)
+        {
+            for (int i = 0; i <= segs; i++)
+            {
+                float a = 1.5f * PI + (i * PI / (2.0f * segs));
+                EMIT_TEX_R_VERTEX(c->x + c->w - r_tr + cosf(a) * r_tr, c->y + r_tr + sinf(a) * r_tr);
+            }
+        }
+        else
+        {
+            EMIT_TEX_R_VERTEX(c->x + c->w, c->y);
+        }
+
+        if (r_br > 0.5f)
+        {
+            for (int i = 0; i <= segs; i++)
+            {
+                float a = 0.0f + (i * PI / (2.0f * segs));
+                EMIT_TEX_R_VERTEX(c->x + c->w - r_br + cosf(a) * r_br, c->y + c->h - r_br + sinf(a) * r_br);
+            }
+        }
+        else
+        {
+            EMIT_TEX_R_VERTEX(c->x + c->w, c->y + c->h);
+        }
+
+        if (r_bl > 0.5f)
+        {
+            for (int i = 0; i <= segs; i++)
+            {
+                float a = 0.5f * PI + (i * PI / (2.0f * segs));
+                EMIT_TEX_R_VERTEX(c->x + r_bl + cosf(a) * r_bl, c->y + c->h - r_bl + sinf(a) * r_bl);
+            }
+        }
+        else
+        {
+            EMIT_TEX_R_VERTEX(c->x, c->y + c->h);
+        }
+
+        if (r_tl > 0.5f)
+        {
+            float a = PI;
+            EMIT_TEX_R_VERTEX(c->x + r_tl + cosf(a) * r_tl, c->y + r_tl + sinf(a) * r_tl);
+        }
+        else
+        {
+            EMIT_TEX_R_VERTEX(c->x, c->y);
+        }
+
+        glEnd();
+#undef EMIT_TEX_R_VERTEX
+        glDisable(GL_TEXTURE_2D);
         break;
     }
     default:
@@ -3378,8 +3335,8 @@ static void draw_rounded_corners_poly_tex_outset(float x, float y, float w, floa
     {                                                  \
         float _sx = (px) * m[0] + (py) * m[4] + m[12]; \
         float _sy = (px) * m[1] + (py) * m[5] + m[13]; \
-        float _u = (_sx - vx) / vw;                    \
-        float _v = (vbuf_h - _sy - vy) / vh;           \
+        float _u = (_sx - vx) / (float)g_blur_pool.max_w; \
+        float _v = (vbuf_h - _sy - vy) / (float)g_blur_pool.max_h; \
         glTexCoord2f(_u, _v);                          \
         glVertex2f((px), (py));                        \
     } while (0)
@@ -3630,41 +3587,41 @@ static void blur_pool_ensure(int w, int h)
         glBindTexture(GL_TEXTURE_2D, 0);
     }
 
-    /* 1. 抓屏原图尺寸 */
+    int need_w = w > g_blur_pool.max_w ? w : g_blur_pool.max_w;
+    int need_h = h > g_blur_pool.max_h ? h : g_blur_pool.max_h;
+    if (need_w < 1024) need_w = 1024;
+    if (need_h < 1024) need_h = 1024;
+
+    /* 1. 抓屏原图尺寸 (单调递增分配，绝不每帧重复重建) */
     if (!g_blur_pool.src_tex)
         glGenTextures(1, &g_blur_pool.src_tex);
-    if (g_blur_pool.src_w != w || g_blur_pool.src_h != h)
+    if (g_blur_pool.max_w < need_w || g_blur_pool.max_h < need_h)
     {
-        g_blur_pool.src_w = w;
-        g_blur_pool.src_h = h;
+        g_blur_pool.max_w = need_w;
+        g_blur_pool.max_h = need_h;
         glBindTexture(GL_TEXTURE_2D, g_blur_pool.src_tex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, need_w, need_h, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glBindTexture(GL_TEXTURE_2D, 0);
-    }
 
-    /* 2. 降采样 1/3 卷积缓冲 (fbo 0 & 1)，大范围扩散光晕 */
-    int dw = w / 3;
-    int dh = h / 3;
-    if (dw < 32)
-        dw = 32;
-    if (dh < 32)
-        dh = 32;
+        /* 降采样 1/3 卷积缓冲 */
+        int dw = need_w / 3;
+        int dh = need_h / 3;
+        if (dw < 64) dw = 64;
+        if (dh < 64) dh = 64;
+        g_blur_pool.max_dw = dw;
+        g_blur_pool.max_dh = dh;
 
-    for (int i = 0; i < 2; i++)
-    {
-        if (!g_blur_pool.fbo[i] && g_gl.GenFramebuffers)
-            g_gl.GenFramebuffers(1, &g_blur_pool.fbo[i]);
-        if (!g_blur_pool.tex[i])
-            glGenTextures(1, &g_blur_pool.tex[i]);
-
-        if (g_blur_pool.w[i] != dw || g_blur_pool.h[i] != dh)
+        for (int i = 0; i < 2; i++)
         {
-            g_blur_pool.w[i] = dw;
-            g_blur_pool.h[i] = dh;
+            if (!g_blur_pool.fbo[i] && g_gl.GenFramebuffers)
+                g_gl.GenFramebuffers(1, &g_blur_pool.fbo[i]);
+            if (!g_blur_pool.tex[i])
+                glGenTextures(1, &g_blur_pool.tex[i]);
+
             glBindTexture(GL_TEXTURE_2D, g_blur_pool.tex[i]);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, dw, dh, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -3680,19 +3637,15 @@ static void blur_pool_ensure(int w, int h)
             if (g_gl.BindFramebuffer)
                 g_gl.BindFramebuffer(GL_FRAMEBUFFER, 0);
         }
-    }
 
-    /* 3. 升采样还原缓冲 (fbo 2)，保证全分辨率贴回 */
-    if (!g_blur_pool.fbo[2] && g_gl.GenFramebuffers)
-        g_gl.GenFramebuffers(1, &g_blur_pool.fbo[2]);
-    if (!g_blur_pool.tex[2])
-        glGenTextures(1, &g_blur_pool.tex[2]);
-    if (g_blur_pool.w[2] != w || g_blur_pool.h[2] != h)
-    {
-        g_blur_pool.w[2] = w;
-        g_blur_pool.h[2] = h;
+        /* 升采样还原缓冲 FBO 2 */
+        if (!g_blur_pool.fbo[2] && g_gl.GenFramebuffers)
+            g_gl.GenFramebuffers(1, &g_blur_pool.fbo[2]);
+        if (!g_blur_pool.tex[2])
+            glGenTextures(1, &g_blur_pool.tex[2]);
+
         glBindTexture(GL_TEXTURE_2D, g_blur_pool.tex[2]);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, need_w, need_h, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -3708,7 +3661,7 @@ static void blur_pool_ensure(int w, int h)
     }
 }
 
-static void gaussian_blur_pass_1d(GLuint src_tex, GLuint dst_fbo, int dst_w, int dst_h, float dir_x, float dir_y, float radius)
+static void gaussian_blur_pass_1d(GLuint src_tex, GLuint dst_fbo, int dst_w, int dst_h, float dir_x, float dir_y, float radius, float u_max, float v_max)
 {
     if (g_gl.BindFramebuffer)
         g_gl.BindFramebuffer(GL_FRAMEBUFFER, dst_fbo);
@@ -3730,17 +3683,16 @@ static void gaussian_blur_pass_1d(GLuint src_tex, GLuint dst_fbo, int dst_w, int
     glEnable(GL_BLEND);
     glBlendFunc(GL_ONE, GL_ONE);
 
-    /* 9-Tap 标准高斯钟形曲线权重 (总和严格为 1.00) */
+    /* 9-Tap 标准高斯钟形曲线权重 */
     const float weights[9] = {0.06f, 0.09f, 0.12f, 0.15f, 0.16f, 0.15f, 0.12f, 0.09f, 0.06f};
     const float offsets[9] = {-4.0f, -3.0f, -2.0f, -1.0f, 0.0f, 1.0f, 2.0f, 3.0f, 4.0f};
 
-    /* 核心修复：单步跨度为 radius / 4.0，确保 9 个抽头完美覆盖整个高斯弥散范围而不越界 */
     float step_val = radius * 0.28f;
     if (step_val > 5.5f)
-        step_val = 3.5f; /* 强行封顶，超大模糊依赖外层 1/3 降采样已足够 */
+        step_val = 3.5f;
 
-    float step_x = (dir_x * step_val) / (float)dst_w;
-    float step_y = (dir_y * step_val) / (float)dst_h;
+    float step_x = (dir_x * step_val * u_max) / (float)dst_w;
+    float step_y = (dir_y * step_val * v_max) / (float)dst_h;
 
     for (int t = 0; t < 9; t++)
     {
@@ -3751,11 +3703,11 @@ static void gaussian_blur_pass_1d(GLuint src_tex, GLuint dst_fbo, int dst_w, int
         glBegin(GL_QUADS);
         glTexCoord2f(0.0f + du, 0.0f + dv);
         glVertex2f(0.0f, 0.0f);
-        glTexCoord2f(1.0f + du, 0.0f + dv);
+        glTexCoord2f(u_max + du, 0.0f + dv);
         glVertex2f((float)dst_w, 0.0f);
-        glTexCoord2f(1.0f + du, 1.0f + dv);
+        glTexCoord2f(u_max + du, v_max + dv);
         glVertex2f((float)dst_w, (float)dst_h);
-        glTexCoord2f(0.0f + du, 1.0f + dv);
+        glTexCoord2f(0.0f + du, v_max + dv);
         glVertex2f(0.0f, (float)dst_h);
         glEnd();
     }
@@ -3769,19 +3721,29 @@ static void gaussian_blur_pass_1d(GLuint src_tex, GLuint dst_fbo, int dst_w, int
     glMatrixMode(GL_PROJECTION);
     glPopMatrix();
 }
+
 static GLuint run_fast_gaussian_blur(GLuint src_tex, int src_w, int src_h, float blur_radius)
 {
-    int dw = g_blur_pool.w[0];
-    int dh = g_blur_pool.h[0];
+    int dw = src_w / 3;
+    int dh = src_h / 3;
+    if (dw < 32) dw = 32;
+    if (dh < 32) dh = 32;
+    if (dw > g_blur_pool.max_dw) dw = g_blur_pool.max_dw;
+    if (dh > g_blur_pool.max_dh) dh = g_blur_pool.max_dh;
+
     float r = blur_radius > 0.0f ? blur_radius : 12.0f;
+    float src_u = (float)src_w / (float)g_blur_pool.max_w;
+    float src_v = (float)src_h / (float)g_blur_pool.max_h;
+    float d_u = (float)dw / (float)g_blur_pool.max_dw;
+    float d_v = (float)dh / (float)g_blur_pool.max_dh;
 
     /* 第 1 轮：大范围扩散 (src_tex -> FBO 0 -> FBO 1) */
-    gaussian_blur_pass_1d(src_tex, g_blur_pool.fbo[0], dw, dh, 1.0f, 0.0f, r * 1.5f);
-    gaussian_blur_pass_1d(g_blur_pool.tex[0], g_blur_pool.fbo[1], dw, dh, 0.0f, 1.0f, r * 1.5f);
+    gaussian_blur_pass_1d(src_tex, g_blur_pool.fbo[0], dw, dh, 1.0f, 0.0f, r * 1.5f, src_u, src_v);
+    gaussian_blur_pass_1d(g_blur_pool.tex[0], g_blur_pool.fbo[1], dw, dh, 0.0f, 1.0f, r * 1.5f, d_u, d_v);
 
     /* 第 2 轮：二次平滑消除阶梯感 (FBO 1 -> FBO 0 -> FBO 1) */
-    gaussian_blur_pass_1d(g_blur_pool.tex[1], g_blur_pool.fbo[0], dw, dh, 1.0f, 0.0f, r * 0.9f);
-    gaussian_blur_pass_1d(g_blur_pool.tex[0], g_blur_pool.fbo[1], dw, dh, 0.0f, 1.0f, r * 0.9f);
+    gaussian_blur_pass_1d(g_blur_pool.tex[1], g_blur_pool.fbo[0], dw, dh, 1.0f, 0.0f, r * 0.9f, d_u, d_v);
+    gaussian_blur_pass_1d(g_blur_pool.tex[0], g_blur_pool.fbo[1], dw, dh, 0.0f, 1.0f, r * 0.9f, d_u, d_v);
 
     /* 第 3 阶段：升采样还原至全分辨率缓冲 FBO 2 */
     if (g_gl.BindFramebuffer)
@@ -3807,11 +3769,11 @@ static GLuint run_fast_gaussian_blur(GLuint src_tex, int src_w, int src_h, float
     glBegin(GL_QUADS);
     glTexCoord2f(0.0f, 0.0f);
     glVertex2f(0.0f, 0.0f);
-    glTexCoord2f(1.0f, 0.0f);
+    glTexCoord2f(d_u, 0.0f);
     glVertex2f((float)src_w, 0.0f);
-    glTexCoord2f(1.0f, 1.0f);
+    glTexCoord2f(d_u, d_v);
     glVertex2f((float)src_w, (float)src_h);
-    glTexCoord2f(0.0f, 1.0f);
+    glTexCoord2f(0.0f, d_v);
     glVertex2f(0.0f, (float)src_h);
     glEnd();
 
@@ -3925,11 +3887,34 @@ void mini_draw_background_image(MiniRenderer *r, float x, float y, float w, floa
     mini_draw_texture(r, x, y, w, h, tex, u_off, v_off, u_off + u_scale, v_off + v_scale);
 }
 
+void mini_draw_texture_rounded(MiniRenderer *r, float x, float y, float w, float h,
+                               uint32_t tex, const float radii[4])
+{
+    if (!r || w <= 0 || h <= 0 || !tex)
+        return;
+    MiniCmd c;
+    memset(&c, 0, sizeof c);
+    c.type = 22; /* MINI_CMD_TEXTURE_ROUNDED */
+    c.x = x;
+    c.y = y;
+    c.w = w;
+    c.h = h;
+    c.texture_id = tex;
+    if (radii)
+    {
+        c.u0 = radii[0];
+        c.v0 = radii[1];
+        c.u1 = radii[2];
+        c.v1 = radii[3];
+    }
+    c.a = 1.0f;
+    mini_push(r, c);
+}
+
 void mini_draw_gradient_multi(MiniRenderer *r, float x, float y, float w, float h,
                               const void *stops, int num_stops,
                               int type, float angle, const float radii[4])
 {
-    (void)radii;
     if (!r || !stops || num_stops <= 0 || w <= 0 || h <= 0)
         return;
     int bw = (int)(w + 0.5f), bh = (int)(h + 0.5f);
@@ -3940,7 +3925,14 @@ void mini_draw_gradient_multi(MiniRenderer *r, float x, float y, float w, float 
     if (!tex)
         return;
 
-    mini_draw_texture(r, x, y, w, h, tex, 0.0f, 0.0f, 1.0f, 1.0f);
+    if (radii && (radii[0] > 0.0f || radii[1] > 0.0f || radii[2] > 0.0f || radii[3] > 0.0f))
+    {
+        mini_draw_texture_rounded(r, x, y, w, h, tex, radii);
+    }
+    else
+    {
+        mini_draw_texture(r, x, y, w, h, tex, 0.0f, 0.0f, 1.0f, 1.0f);
+    }
 }
 
 void mini_renderer_push_clip(MiniRenderer *r, float x, float y, float w, float h)

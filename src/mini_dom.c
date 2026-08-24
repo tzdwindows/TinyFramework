@@ -216,8 +216,10 @@ typedef struct MiniDocumentContext
     int is_restyling_active;
     struct G2dCmd *g2d_cmds;
     int g2d_count;
-    float g2d_pts_x[2048], g2d_pts_y[2048];
+    float g2d_pts_x[8192], g2d_pts_y[8192];
     int g2d_pts_n, g2d_is_closed;
+    int g2d_subpath_starts[512];
+    int g2d_num_subpaths;
     double g2d_matrix[6];
     double g2d_stack[16][6];
     int g2d_stack_p;
@@ -272,12 +274,74 @@ static MiniDocumentContext *mini_get_ctx(MiniDocument *doc)
 #define g2d_py (mini_get_ctx(g_active_doc)->g2d_pts_y)
 #define g2d_pn (mini_get_ctx(g_active_doc)->g2d_pts_n)
 #define g2d_closed (mini_get_ctx(g_active_doc)->g2d_is_closed)
+#define g2d_subpaths (mini_get_ctx(g_active_doc)->g2d_subpath_starts)
+#define g2d_num_subs (mini_get_ctx(g_active_doc)->g2d_num_subpaths)
 #define g2d_m (mini_get_ctx(g_active_doc)->g2d_matrix)
 #define g2d_stk (mini_get_ctx(g_active_doc)->g2d_stack)
 #define g2d_sp (mini_get_ctx(g_active_doc)->g2d_stack_p)
 #define g2d_font_size (mini_get_ctx(g_active_doc)->g2d_f_size)
 #define g2d_pen_x (mini_get_ctx(g_active_doc)->g2d_p_x)
 #define g2d_pen_y (mini_get_ctx(g_active_doc)->g2d_p_y)
+
+static uint32_t cw_prop_hash(const char *s)
+{
+    uint32_t h = 2166136261u;
+    while (*s)
+    {
+        h ^= (uint8_t)*s++;
+        h *= 16777619u;
+    }
+    return h ? h : 1;
+}
+
+static uint32_t cw_slot(const void *node, uint32_t ph, uint8_t pseudo)
+{
+    uintptr_t n = (uintptr_t)node;
+    n ^= n >> 15;
+    uint32_t h = (uint32_t)n ^ (ph * 2654435761u) ^ ((uint32_t)pseudo + 1) * 2246822519u;
+    return h & (MINI_CW_CAP - 1);
+}
+
+static int cw_seen(const void *node, uint32_t ph, uint8_t pseudo)
+{
+    if (!g_active_doc) return 0;
+    uint32_t h = cw_slot(node, ph, pseudo);
+    for (int i = 0; i < 8; i++)
+    {
+        CascadeWinner *w = &g_cw[(h + i) & (MINI_CW_CAP - 1)];
+        if (!w->node)
+            return 0;
+        if (w->node == node && w->prop_hash == ph && w->pseudo == pseudo)
+            return 1;
+    }
+    return 0;
+}
+
+static void cw_mark(const void *node, uint32_t ph, uint8_t pseudo)
+{
+    if (!g_active_doc) return;
+    uint32_t h = cw_slot(node, ph, pseudo);
+    for (int i = 0; i < 8; i++)
+    {
+        CascadeWinner *w = &g_cw[(h + i) & (MINI_CW_CAP - 1)];
+        if (!w->node)
+        {
+            w->node = node;
+            w->prop_hash = ph;
+            w->pseudo = pseudo;
+            return;
+        }
+        if (w->node == node && w->prop_hash == ph && w->pseudo == pseudo)
+            return;
+    }
+}
+
+static void cw_clear(void)
+{
+    if (g_active_doc)
+        memset(g_cw, 0, sizeof(CascadeWinner) * MINI_CW_CAP);
+}
+
 
 /* events state made visible to the render pass */
 struct MiniEventState;
@@ -1139,6 +1203,8 @@ void mini_node_destroy(struct MiniNode *n)
         mini_node_destroy(n->pseudo_before);
     if (n->pseudo_after)
         mini_node_destroy(n->pseudo_after);
+    if (n->pseudo_placeholder)
+        mini_node_destroy(n->pseudo_placeholder);
     MiniNodeVar *nv = n->vars;
     /* If this node carried scoped custom properties, its address may be
        recycled by a future malloc for a node with different (or no) scoped
@@ -1282,6 +1348,11 @@ void mini_dom_set_mutation_hook(struct MiniDocument *doc, MiniMutationHook hook,
 
 static void notify_mutation(const char *evt, struct MiniNode *parent, struct MiniNode *node, const char *name, const char *value)
 {
+    if (g_active_doc)
+    {
+        g_active_doc->dirty = 1;
+        g_active_doc->paint_dirty = 1;
+    }
     MiniDocumentContext *ctx = mini_get_ctx(g_active_doc);
     if (ctx->mhook_fn && ctx->mdoc_ptr)
         ctx->mhook_fn(ctx->mdoc_ptr, evt, parent, node, name, value, ctx->mud_ptr);
@@ -2138,7 +2209,12 @@ void mini_style_set(struct MiniNode *n, const char *prop, const char *val)
     else if (!strcmp(prop, "margin"))
     {
         static const uint8_t mf[4] = {CF_MTOP, CF_MRIGHT, CF_MBOT, CF_MLEFT};
-        parse_len_box4_node(n, mf, v, s->len_margin);
+        MiniLength tmp_box[4];
+        parse_len_box4_node(n, mf, v, tmp_box);
+        if (!cw_seen(n, cw_prop_hash("margin-top"), 0)) s->len_margin[0] = tmp_box[0];
+        if (!cw_seen(n, cw_prop_hash("margin-right"), 0)) s->len_margin[1] = tmp_box[1];
+        if (!cw_seen(n, cw_prop_hash("margin-bottom"), 0)) s->len_margin[2] = tmp_box[2];
+        if (!cw_seen(n, cw_prop_hash("margin-left"), 0)) s->len_margin[3] = tmp_box[3];
     }
     else if (!strcmp(prop, "margin-top"))
         set_len_field(n, CF_MTOP, v, &s->len_margin[0]);
@@ -2151,7 +2227,12 @@ void mini_style_set(struct MiniNode *n, const char *prop, const char *val)
     else if (!strcmp(prop, "padding"))
     {
         static const uint8_t pf[4] = {CF_PTOP, CF_PRIGHT, CF_PBOT, CF_PLEFT};
-        parse_len_box4_node(n, pf, v, s->len_padding);
+        MiniLength tmp_box[4];
+        parse_len_box4_node(n, pf, v, tmp_box);
+        if (!cw_seen(n, cw_prop_hash("padding-top"), 0)) s->len_padding[0] = tmp_box[0];
+        if (!cw_seen(n, cw_prop_hash("padding-right"), 0)) s->len_padding[1] = tmp_box[1];
+        if (!cw_seen(n, cw_prop_hash("padding-bottom"), 0)) s->len_padding[2] = tmp_box[2];
+        if (!cw_seen(n, cw_prop_hash("padding-left"), 0)) s->len_padding[3] = tmp_box[3];
     }
     else if (!strcmp(prop, "padding-top"))
         set_len_field(n, CF_PTOP, v, &s->len_padding[0]);
@@ -3039,19 +3120,30 @@ void mini_style_set(struct MiniNode *n, const char *prop, const char *val)
     }
     else if (!strcmp(prop, "color"))
     {
-        float old_r = s->color_r, old_g = s->color_g, old_b = s->color_b, old_a = s->color_a;
-        mini_parse_color(v, &s->color_r, &s->color_g, &s->color_b, &s->color_a);
-        float dur = 0.3f;
-        int timing = 0;
-        float bez[4] = {0};
-        if (n->has_base_style && find_transition_config(s, "color", &dur, &timing, bez))
+        if (!strcmp(v, "inherit"))
         {
-            float cur_val[4] = {old_r, old_g, old_b, old_a}, tgt_val[4] = {s->color_r, s->color_g, s->color_b, s->color_a};
-            mini_add_transition_val(n, "color", cur_val, tgt_val, 4, dur, timing, bez);
-            s->color_r = old_r;
-            s->color_g = old_g;
-            s->color_b = old_b;
-            s->color_a = old_a;
+            s->color_set = 0;
+        }
+        else
+        {
+            float old_r = s->color_r, old_g = s->color_g, old_b = s->color_b, old_a = s->color_a;
+            int ok = mini_parse_color(v, &s->color_r, &s->color_g, &s->color_b, &s->color_a);
+            s->color_set = ok ? 1 : 0;
+            float dur = 0.3f;
+            int timing = 0;
+            float bez[4] = {0};
+            if (g_restyling && n->has_base_style && find_transition_config(s, "color", &dur, &timing, bez))
+            {
+                float cur_val[4] = {old_r, old_g, old_b, old_a}, tgt_val[4] = {s->color_r, s->color_g, s->color_b, s->color_a};
+                mini_add_transition_val(n, "color", cur_val, tgt_val, 4, dur, timing, bez);
+                if (old_r != 0.0f || old_g != 0.0f || old_b != 0.0f)
+                {
+                    s->color_r = old_r;
+                    s->color_g = old_g;
+                    s->color_b = old_b;
+                    s->color_a = old_a;
+                }
+            }
         }
     }
     else if (!strcmp(prop, "font-size"))
@@ -4339,6 +4431,37 @@ static int text_wrap_lines(const char *text, float font_size, float max_w, float
 
         /* 单词测距必须带上字间距 */
         float word_w = mini_text_measure_ex(word_buf, font_size, ls);
+        if (word_w > max_w + 2.0f && word_bytes > 1)
+        {
+            const char *wp = word_start;
+            const char *w_end = word_start + word_bytes;
+            while (wp < w_end)
+            {
+                unsigned char uc = (unsigned char)*wp;
+                int ulen = 1;
+                if (uc >= 0xF0) ulen = 4;
+                else if (uc >= 0xE0) ulen = 3;
+                else if (uc >= 0xC0) ulen = 2;
+                if (wp + ulen > w_end) ulen = (int)(w_end - wp);
+
+                char char_buf[8] = {0};
+                memcpy(char_buf, wp, ulen);
+                char_buf[ulen] = '\0';
+                float char_w = mini_text_measure_ex(char_buf, font_size, ls);
+
+                if (line_w > 0.0f && line_w + char_w > max_w + 2.0f)
+                {
+                    lines++;
+                    line_w = char_w;
+                }
+                else
+                {
+                    line_w += char_w;
+                }
+                wp += ulen;
+            }
+            continue;
+        }
         if (line_w > 0.0f && line_w + word_w > max_w + 2.0f)
         {
             lines++;
@@ -4536,6 +4659,26 @@ static void shift_subtree(struct MiniNode *n, float dx, float dy)
         c->style.abs_x += dx;
         c->style.abs_y += dy;
         shift_subtree(c, dx, dy);
+    }
+}
+
+static void flush_inline_line_align(struct MiniNode **kids, int count, float content_left, float pen_x, float content_w, int text_align)
+{
+    if (count <= 0 || text_align == 0)
+        return;
+    float line_w = pen_x - content_left;
+    float off = 0.0f;
+    if (text_align == 1) /* center */
+        off = (content_w - line_w) * 0.5f;
+    else if (text_align == 2) /* right */
+        off = content_w - line_w;
+    if (off > 0.0f)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            kids[i]->style.abs_x += off;
+            shift_subtree(kids[i], off, 0.0f);
+        }
     }
 }
 
@@ -5246,13 +5389,13 @@ static void layout_node(struct MiniNode *n, float x, float y,
             n->style.len_line_height = n->parent->style.len_line_height;
             n->style.line_height_set = 1;
         }
-        if (n->style.color_r == 0.0f && n->style.color_g == 0.0f &&
-            n->style.color_b == 0.0f && n->style.color_a == 1.0f)
+        if (!n->style.color_set && n->parent && n->parent->style.color_set)
         {
             n->style.color_r = n->parent->style.color_r;
             n->style.color_g = n->parent->style.color_g;
             n->style.color_b = n->parent->style.color_b;
             n->style.color_a = n->parent->style.color_a;
+            n->style.color_set = 1;
         }
         if (n->style.text_align == 0 && n->parent->style.text_align != 0)
         {
@@ -5424,6 +5567,14 @@ static void layout_node(struct MiniNode *n, float x, float y,
         bottom_v = (s->len_bottom.unit == 1) ? resolve_len(s->len_bottom, avail_h, own_font, g_lctx.root_font, g_lctx.vw, g_lctx.vh)
                                              : resolve_field(n, CF_BOTTOM, s->len_bottom, avail_w, own_font,
                                                              g_lctx.root_font, g_lctx.vw, g_lctx.vh);
+    }
+
+    if (s->position == 2 || s->position == 3)
+    {
+        if (s->display == MINI_DISPLAY_INLINE)
+            s->display = MINI_DISPLAY_BLOCK;
+        else if (s->display == MINI_DISPLAY_INLINE_FLEX)
+            s->display = MINI_DISPLAY_FLEX;
     }
 
     float mw = s->margin[1] + s->margin[3];
@@ -5604,13 +5755,17 @@ static void layout_node(struct MiniNode *n, float x, float y,
             kids_w += (kcount - 1) * gap_px;
         cw = kids_w + ph;
     }
-    /* 2b. 替换元素（canvas/img/video/svg）无显式 CSS 宽但已有固有尺寸（来自
-       width 属性或默认 300/150）：用固有宽度，而非走 inline 空元素的文本宽≈0。
-       否则 <canvas width=200> 在 inline 无文本时被分支#3 算成 cw≈0，导致 WebGL
-       视口/裁剪锚定到 0 尺寸矩形，画面不渲染（实测 getBoundingClientRect width=0）。 */
+    /* 2b. 替换/表单控件元素（canvas/img/video/svg/input/select/textarea/progress/meter）
+       无显式 CSS 宽但已有固有尺寸（来自 width 属性或默认 300/150/80/50 等）：用固有
+       宽度，而非走 inline 空元素的文本宽≈0。否则 <textarea>/<progress>/<meter>/
+       <input> 在无 CSS 宽时被分支#3 算成 cw≈0，getBoundingClientRect width=0，
+       控件不渲染（实测 m7）。button 例外：其宽度按标签文本 shrink-to-fit（分支#3）。 */
     else if (n->tag &&
              (!strcmp(n->tag, "canvas") || !strcmp(n->tag, "img") ||
-              !strcmp(n->tag, "video") || !strcmp(n->tag, "svg")) &&
+              !strcmp(n->tag, "video") || !strcmp(n->tag, "svg") ||
+              !strcmp(n->tag, "input") || !strcmp(n->tag, "select") ||
+              !strcmp(n->tag, "textarea") || !strcmp(n->tag, "progress") ||
+              !strcmp(n->tag, "meter")) &&
              s->w > 0.0f)
     {
         cw = (s->box_sizing == 1) ? s->w : s->w + ph;
@@ -6011,8 +6166,17 @@ static void layout_node(struct MiniNode *n, float x, float y,
                 if (child_cross > max_cross)
                     max_cross = child_cross;
 
-                float c_fs = c->style.font_size > 0.0f ? c->style.font_size : c->style.h;
-                float c_ascent = c_fs * 0.82f;
+                float c_ascent = 0.0f;
+                int has_inflow_text = (c->type == MN_TEXT_NODE) || (c->first_child && (c->first_child->type == MN_TEXT_NODE && c->first_child->text && !is_all_ws(c->first_child->text)));
+                if (has_inflow_text)
+                {
+                    float c_fs = c->style.font_size > 0.0f ? c->style.font_size : 16.0f;
+                    c_ascent = c_fs * 0.82f;
+                }
+                else
+                {
+                    c_ascent = c->style.h;
+                }
                 if (c_ascent > max_ascent)
                     max_ascent = c_ascent;
             }
@@ -6145,17 +6309,31 @@ static void layout_node(struct MiniNode *n, float x, float y,
                 {
                     struct MiniNode *c = flex_kids[ki];
                     float child_cross = row ? c->style.h : c->style.w;
+                    int has_cross_auto_margin = row ? (c->style.len_margin[0].unit == 8 || c->style.len_margin[2].unit == 8)
+                                                    : (c->style.len_margin[1].unit == 8 || c->style.len_margin[3].unit == 8);
                     int ai = (c->style.align_self >= 0) ? c->style.align_self : s->align_items;
                     float off = 0.0f;
-                    if (ai == 2)
-                        off = (cross - child_cross) / 2.0f;
-                    else if (ai == 3)
-                        off = cross - child_cross;
-                    else if (ai == 4 && row)
+                    if (!has_cross_auto_margin)
                     {
-                        float c_fs = c->style.font_size > 0.0f ? c->style.font_size : c->style.h;
-                        float c_ascent = c_fs * 0.82f;
-                        off = max_ascent - c_ascent;
+                        if (ai == 2)
+                            off = (cross - child_cross) / 2.0f;
+                        else if (ai == 3)
+                            off = cross - child_cross;
+                        else if (ai == 4 && row)
+                        {
+                            float c_ascent = 0.0f;
+                            int has_inflow_text = (c->type == MN_TEXT_NODE) || (c->first_child && (c->first_child->type == MN_TEXT_NODE && c->first_child->text && !is_all_ws(c->first_child->text)));
+                            if (has_inflow_text)
+                            {
+                                float c_fs = c->style.font_size > 0.0f ? c->style.font_size : 16.0f;
+                                c_ascent = c_fs * 0.82f;
+                            }
+                            else
+                            {
+                                c_ascent = c->style.h;
+                            }
+                            off = max_ascent - c_ascent;
+                        }
                     }
                     if (off < 0.0f)
                         off = 0.0f;
@@ -6184,17 +6362,31 @@ static void layout_node(struct MiniNode *n, float x, float y,
                 {
                     struct MiniNode *c = flex_kids[ki];
                     float child_cross = row ? c->style.h : c->style.w;
+                    int has_cross_auto_margin = row ? (c->style.len_margin[0].unit == 8 || c->style.len_margin[2].unit == 8)
+                                                    : (c->style.len_margin[1].unit == 8 || c->style.len_margin[3].unit == 8);
                     int ai = (c->style.align_self >= 0) ? c->style.align_self : s->align_items;
                     float off = 0.0f;
-                    if (ai == 2)
-                        off = (cross - child_cross) / 2.0f;
-                    else if (ai == 3)
-                        off = cross - child_cross;
-                    else if (ai == 4 && row)
+                    if (!has_cross_auto_margin)
                     {
-                        float c_fs = c->style.font_size > 0.0f ? c->style.font_size : c->style.h;
-                        float c_ascent = c_fs * 0.82f;
-                        off = max_ascent - c_ascent;
+                        if (ai == 2)
+                            off = (cross - child_cross) / 2.0f;
+                        else if (ai == 3)
+                            off = cross - child_cross;
+                        else if (ai == 4 && row)
+                        {
+                            float c_ascent = 0.0f;
+                            int has_inflow_text = (c->type == MN_TEXT_NODE) || (c->first_child && (c->first_child->type == MN_TEXT_NODE && c->first_child->text && !is_all_ws(c->first_child->text)));
+                            if (has_inflow_text)
+                            {
+                                float c_fs = c->style.font_size > 0.0f ? c->style.font_size : 16.0f;
+                                c_ascent = c_fs * 0.82f;
+                            }
+                            else
+                            {
+                                c_ascent = c->style.h;
+                            }
+                            off = max_ascent - c_ascent;
+                        }
                     }
                     if (off < 0.0f)
                         off = 0.0f;
@@ -6306,6 +6498,8 @@ static void layout_node(struct MiniNode *n, float x, float y,
                 float prev_margin_bottom = 0.0f;
                 int has_prev_block = 0;
                 struct MiniNode *c = n->first_child;
+                struct MiniNode *line_kids[64];
+                int line_kid_count = 0;
 
                 while (c)
                 {
@@ -6320,6 +6514,8 @@ static void layout_node(struct MiniNode *n, float x, float y,
                             prev_margin_bottom = 0.0f;
                             if (c->tag && !strcmp(c->tag, "br"))
                             {
+                                flush_inline_line_align(line_kids, line_kid_count, content_left, pen_x, content_w, s->text_align);
+                                line_kid_count = 0;
                                 float fs = s->font_size > 0.0f ? s->font_size : 16.0f;
                                 float br_lh = mini_text_line_height(fs);
                                 cy += line_h > 0.0f ? line_h : br_lh;
@@ -6359,6 +6555,8 @@ static void layout_node(struct MiniNode *n, float x, float y,
                             /* 仅在整行确实放不下且不是行首时才换行 */
                             if (pen_x > content_left && (pen_x + step_w > content_left + content_w + 4.0f))
                             {
+                                flush_inline_line_align(line_kids, line_kid_count, content_left, pen_x, content_w, s->text_align);
+                                line_kid_count = 0;
                                 cy += line_h > 0.0f ? line_h : 18.0f;
                                 pen_x = content_left;
                                 line_h = 0.0f;
@@ -6369,13 +6567,14 @@ static void layout_node(struct MiniNode *n, float x, float y,
                                 step_h = c->style.h + c->style.margin[0] + c->style.margin[2];
                             }
 
-                            /* Baseline alignment for specific inline-blocks (hack) */
+                            /* Baseline alignment for inline elements */
                             if (c->style.display == MINI_DISPLAY_INLINE && c->type != MN_TEXT_NODE)
                             {
+                                float parent_fs = s->font_size > 0.0f ? s->font_size : 16.0f;
+                                float child_fs = c->style.font_size > 0.0f ? c->style.font_size : parent_fs;
                                 const char *cls = mini_node_get_attribute(c, "class");
                                 if (cls && (strstr(cls, "accent-dot") || strstr(cls, "terminal-cursor")))
                                 {
-                                    float parent_fs = s->font_size > 0.0f ? s->font_size : 16.0f;
                                     float baseline = parent_fs * 0.82f;
                                     float target_ny = cy + baseline - c->style.h;
                                     if (strstr(cls, "accent-dot"))
@@ -6387,7 +6586,22 @@ static void layout_node(struct MiniNode *n, float x, float y,
                                     if (dy != 0.0f)
                                         shift_subtree(c, 0.0f, dy);
                                 }
+                                else if (child_fs < parent_fs)
+                                {
+                                    /* W3C inline baseline alignment: align child baseline to parent line baseline */
+                                    float baseline_p = parent_fs * 0.82f;
+                                    float baseline_c = child_fs * 0.82f;
+                                    float shift_y = baseline_p - baseline_c;
+                                    float target_ny = cy + shift_y;
+                                    float dy = target_ny - c->style.abs_y;
+                                    c->style.abs_y = target_ny;
+                                    if (dy != 0.0f)
+                                        shift_subtree(c, 0.0f, dy);
+                                }
                             }
+
+                            if (line_kid_count < (int)(sizeof(line_kids) / sizeof(line_kids[0])))
+                                line_kids[line_kid_count++] = c;
 
                             pen_x += step_w;
                             if (step_h > line_h)
@@ -6395,6 +6609,8 @@ static void layout_node(struct MiniNode *n, float x, float y,
                         }
                         else
                         {
+                            flush_inline_line_align(line_kids, line_kid_count, content_left, pen_x, content_w, s->text_align);
+                            line_kid_count = 0;
                             if (line_h > 0.0f || pen_x > content_left)
                             {
                                 cy += line_h;
@@ -6439,6 +6655,9 @@ static void layout_node(struct MiniNode *n, float x, float y,
                     }
                     c = c->next_sibling;
                 }
+
+                flush_inline_line_align(line_kids, line_kid_count, content_left, pen_x, content_w, s->text_align);
+                line_kid_count = 0;
 
                 if (line_h > 0.0f)
                 {
@@ -6507,10 +6726,10 @@ static void layout_absolutes(struct MiniNode *n)
             if (cb)
             {
                 MiniStyle *c = &cb->style;
-                cb_x = c->abs_x;
-                cb_y = c->abs_y;
-                cb_w = c->w;
-                cb_h = c->h > 0 ? c->h : g_lctx.vh;
+                cb_x = c->abs_x + c->border_w[3];
+                cb_y = c->abs_y + c->border_w[0];
+                cb_w = c->w - c->border_w[1] - c->border_w[3];
+                cb_h = (c->h > 0 ? c->h : g_lctx.vh) - c->border_w[0] - c->border_w[2];
             }
             else
             {
@@ -6543,7 +6762,7 @@ static void layout_absolutes(struct MiniNode *n)
             target_w = cb_w - lv - rv - s->margin[1] - s->margin[3];
             if (target_w < 0)
                 target_w = 0;
-            pos_x = cb_x + lv;
+            pos_x = cb_x + lv + s->margin[3];
         }
         else if (has_r && !has_l)
         {
@@ -6552,7 +6771,7 @@ static void layout_absolutes(struct MiniNode *n)
         }
         else
         {
-            pos_x = cb_x + lv;
+            pos_x = cb_x + (has_l ? lv : 0.0f) + s->margin[3];
             target_w = tw;
         }
 
@@ -6565,7 +6784,7 @@ static void layout_absolutes(struct MiniNode *n)
             target_h = cb_h - tv - bv - s->margin[0] - s->margin[2];
             if (target_h < 0)
                 target_h = 0;
-            pos_y = cb_y + tv;
+            pos_y = cb_y + tv + s->margin[0];
         }
         else if (has_b && !has_t)
         {
@@ -6574,10 +6793,12 @@ static void layout_absolutes(struct MiniNode *n)
         }
         else
         {
-            pos_y = cb_y + tv;
+            pos_y = cb_y + (has_t ? tv : 0.0f) + s->margin[0];
             target_h = th;
         }
 
+        s->w = target_w;
+        s->h = target_h;
         layout_node(n, pos_x, pos_y, target_w, target_h);
     }
 
@@ -6587,54 +6808,18 @@ static void layout_absolutes(struct MiniNode *n)
         layout_absolutes(n->shadow_root);
 }
 
+static void draw_text_wrapped_ex(MiniRenderer *r, const char *text,
+                                 float x, float y, float max_w, float fs,
+                                 float cr, float cg, float cb, float ca, int align, float ls, float lh, int font_weight, int font_style);
+
 static void draw_text_wrapped(MiniRenderer *r, const char *text,
                               float x, float y, float max_w, float fs,
                               float cr, float cg, float cb, float ca, int align)
 {
     if (!text || !*text || fs <= 0.0f || ca <= 0.0f)
         return;
-
     float lh = mini_text_line_height(fs);
-    float penx = 0.0f, peny = 0.0f;
-    size_t len = strlen(text);
-    size_t i = 0;
-
-    while (i < len)
-    {
-        unsigned char c = (unsigned char)text[i];
-        if (c == '\n')
-        {
-            peny += lh;
-            penx = 0.0f;
-            i++;
-            continue;
-        }
-
-        int clen = 1;
-        if (c >= 0xF0)
-            clen = 4;
-        else if (c >= 0xE0)
-            clen = 3;
-        else if (c >= 0xC0)
-            clen = 2;
-        if (i + clen > len)
-            clen = (int)(len - i);
-
-        char utf8_char[8] = {0};
-        memcpy(utf8_char, text + i, clen);
-        utf8_char[clen] = '\0';
-
-        float char_w = mini_text_measure(utf8_char, fs);
-        if (penx > 0.0f && penx + char_w > max_w)
-        {
-            peny += lh;
-            penx = 0.0f;
-        }
-
-        mini_draw_text(r, x + penx, y + peny, utf8_char, fs, cr, cg, cb, ca);
-        penx += char_w;
-        i += clen;
-    }
+    draw_text_wrapped_ex(r, text, x, y, max_w, fs, cr, cg, cb, ca, align, 0.0f, lh, 400, 0);
 }
 
 static void prune_empty_pseudos(struct MiniNode *n)
@@ -7022,23 +7207,44 @@ static void render_input(struct MiniNode *n, MiniRenderer *r)
         mini_draw_rect_stroke(r, x, y, w, h, s->has_border ? s->border_w[0] : 1.0f, sr, sg, sb, sa);
     }
     const char *val = mini_node_get_attribute(n, "value");
+    float fs = s->font_size > 0.0f ? s->font_size : 12.0f;
     if (val && val[0])
     {
         const char *disp = !strcmp(type, "password") ? "........" : val;
-        draw_text_wrapped(r, disp, x + 5, y + (h - 12) / 2, w - 10, 12,
+        draw_text_wrapped(r, disp, x + 5, y + (h - fs) / 2, w - 10, fs,
                           s->color_r, s->color_g, s->color_b, s->color_a, 0); /* 使用 CSS 真实颜色 */
     }
     else
     {
         const char *ph = mini_node_get_attribute(n, "placeholder");
         if (ph && ph[0])
-            draw_text_wrapped(r, ph, x + 5, y + (h - 12) / 2, w - 10, 12,
-                              s->color_r, s->color_g, s->color_b, s->color_a * 0.5f, 0);
+        {
+            float pr = 0.55f, pg = 0.55f, pb = 0.55f, pa = 0.85f;
+            float pfs = fs;
+            if (n->pseudo_placeholder)
+            {
+                const MiniStyle *ps = &n->pseudo_placeholder->style;
+                if (ps->color_a > 0.0f)
+                {
+                    pr = ps->color_r; pg = ps->color_g; pb = ps->color_b; pa = ps->color_a;
+                }
+                if (ps->font_size > 0.0f) pfs = ps->font_size;
+            }
+            else if (s->color_a > 0.0f)
+            {
+                pr = s->color_r * 0.7f + 0.3f * 0.55f;
+                pg = s->color_g * 0.7f + 0.3f * 0.55f;
+                pb = s->color_b * 0.7f + 0.3f * 0.55f;
+                pa = s->color_a * 0.60f;
+            }
+            draw_text_wrapped(r, ph, x + 5, y + (h - pfs) / 2, w - 10, pfs,
+                              pr, pg, pb, pa, 0);
+        }
     }
     /* caret: position over the actual value (password rendering is the
        fixed-dot stub above; its caret is best-effort on the value width) */
-    render_text_caret(n, r, val ? val : "", x + 5, y + (h - 12) / 2,
-                      12.0f, x, w, 0);
+    render_text_caret(n, r, val ? val : "", x + 5, y + (h - fs) / 2,
+                      fs, x, w, 0);
 }
 
 static void render_gauge(struct MiniNode *n, MiniRenderer *r, int is_progress)
@@ -7112,13 +7318,55 @@ static void render_form_control(struct MiniNode *n, MiniRenderer *r)
     }
     if (!strcmp(tag, "textarea"))
     {
-        mini_draw_rect(r, x, y, w, h, 1, 1, 1, 1);
-        mini_draw_rect_stroke(r, x, y, w, h, 1, 0.4f, 0.4f, 0.4f, 0.9f);
-        if (n->text && n->text[0])
-            draw_text_wrapped(r, n->text, x + 4, y + 4, w - 8, 12,
-                              0.1f, 0.1f, 0.1f, 1.0f, 0);
-        render_text_caret(n, r, n->text ? n->text : "", x + 4, y + 4,
-                          12.0f, x, w, 1);
+        float br = (s->bg_a > 0) ? s->bg_r : 1.0f;
+        float bg = (s->bg_a > 0) ? s->bg_g : 1.0f;
+        float bb = (s->bg_a > 0) ? s->bg_b : 1.0f;
+        float ba = (s->bg_a > 0) ? s->bg_a : 1.0f;
+        mini_draw_rect(r, x, y, w, h, br, bg, bb, ba);
+        float sr = s->has_border ? s->border_r : 0.4f;
+        float sg = s->has_border ? s->border_g : 0.4f;
+        float sb = s->has_border ? s->border_b : 0.4f;
+        float sa = s->has_border ? s->border_a : 0.9f;
+        mini_draw_rect_stroke(r, x, y, w, h, s->has_border ? s->border_w[0] : 1.0f, sr, sg, sb, sa);
+
+        const char *tval = (n->text && n->text[0]) ? n->text : mini_node_get_attribute(n, "value");
+        float fs = s->font_size > 0.0f ? s->font_size : 12.0f;
+        if (tval && tval[0])
+        {
+            float cr = (s->color_a > 0) ? s->color_r : 0.1f;
+            float cg = (s->color_a > 0) ? s->color_g : 0.1f;
+            float cb = (s->color_a > 0) ? s->color_b : 0.1f;
+            float ca = (s->color_a > 0) ? s->color_a : 1.0f;
+            draw_text_wrapped(r, tval, x + 4, y + 4, w - 8, fs, cr, cg, cb, ca, 0);
+            render_text_caret(n, r, tval, x + 4, y + 4, fs, x, w, 1);
+        }
+        else
+        {
+            const char *ph = mini_node_get_attribute(n, "placeholder");
+            if (ph && ph[0])
+            {
+                float pr = 0.55f, pg = 0.55f, pb = 0.55f, pa = 0.85f;
+                float pfs = fs;
+                if (n->pseudo_placeholder)
+                {
+                    const MiniStyle *ps = &n->pseudo_placeholder->style;
+                    if (ps->color_a > 0.0f)
+                    {
+                        pr = ps->color_r; pg = ps->color_g; pb = ps->color_b; pa = ps->color_a;
+                    }
+                    if (ps->font_size > 0.0f) pfs = ps->font_size;
+                }
+                else if (s->color_a > 0.0f)
+                {
+                    pr = s->color_r * 0.7f + 0.3f * 0.55f;
+                    pg = s->color_g * 0.7f + 0.3f * 0.55f;
+                    pb = s->color_b * 0.7f + 0.3f * 0.55f;
+                    pa = s->color_a * 0.60f;
+                }
+                draw_text_wrapped(r, ph, x + 4, y + 4, w - 8, pfs, pr, pg, pb, pa, 0);
+            }
+            render_text_caret(n, r, "", x + 4, y + 4, fs, x, w, 1);
+        }
         return;
     }
     if (!strcmp(tag, "select"))
@@ -7903,7 +8151,7 @@ static void svg_draw_path(struct MiniNode *n, MiniRenderer *r, SvgXform m,
                 sq = (sq < 0) ? 0 : sq;
                 float coef = sign * sqrtf(sq);
                 float cx1 = coef * ((rx * y1) / ry);
-                float cy1 = coef * (-(ry * x1) / rx);
+            float cy1 = coef * (-(ry * x1) / rx);
 
                 float cx = cos_r * cx1 - sin_r * cy1 + (curx + x) / 2.0f;
                 float cy = sin_r * cx1 + cos_r * cy1 + (cury + y) / 2.0f;
@@ -7975,7 +8223,7 @@ static void svg_draw_shape(struct MiniNode *n, MiniRenderer *r, SvgXform m)
 
     int stroke = svg_paint(n, sv, &sr, &sg, &sb, &sa, 0);
 
-    float px[256], py[256];
+    float px[512], py[512];
     int np = 0, closed = 0;
 
     if (!strcmp(tag, "rect"))
@@ -8068,7 +8316,14 @@ static void svg_draw_shape(struct MiniNode *n, MiniRenderer *r, SvgXform m)
         if (href && href[0] == '#')
         {
             const char *id = href + 1;
-            struct MiniNode *target = mini_dom_get_element_by_id(g_active_doc, id);
+            struct MiniNode *target = g_active_doc ? mini_dom_get_element_by_id(g_active_doc, id) : NULL;
+            if (!target)
+            {
+                struct MiniNode *root_svg = n;
+                while (root_svg->parent && root_svg->tag && strcmp(root_svg->tag, "svg"))
+                    root_svg = root_svg->parent;
+                target = find_node_by_id_rec(root_svg, id);
+            }
             if (target && target != n)
             {
                 float ux = svg_attr_f(n, "x", 0);
@@ -8280,7 +8535,7 @@ static void g2d_push(int kind, float x, float y, float x2, float y2,
 }
 static void g2d_pt(float x, float y) /* bake the current 2D transform */
 {
-    if (g2d_pn < 2048)
+    if (g2d_pn < 8192)
     {
         g2d_px[g2d_pn] = (float)(g2d_m[0] * x + g2d_m[2] * y + g2d_m[4]);
         g2d_py[g2d_pn] = (float)(g2d_m[1] * x + g2d_m[3] * y + g2d_m[5]);
@@ -8310,15 +8565,22 @@ void mini_2d_reset(void)
         }
     g2d_n = 0;
     g2d_pn = 0;
+    g2d_num_subs = 0;
     g2d_closed = 0;
 }
 void mini_2d_begin_path(void)
 {
     g2d_pn = 0;
+    g2d_num_subs = 0;
     g2d_closed = 0;
 }
 void mini_2d_close_path(void) { g2d_closed = 1; }
-void mini_2d_line_to(float x, float y) { g2d_pt(x, y); }
+void mini_2d_line_to(float x, float y)
+{
+    if (g2d_num_subs == 0 && g2d_num_subs < 512)
+        g2d_subpaths[g2d_num_subs++] = g2d_pn;
+    g2d_pt(x, y);
+}
 void mini_2d_arc(float cx, float cy, float r, float a0, float a1, int ccw)
 {
     if (r < 0)
@@ -8327,6 +8589,8 @@ void mini_2d_arc(float cx, float cy, float r, float a0, float a1, int ccw)
     float step = (a1 - a0) / seg;
     if (ccw)
         step = -step;
+    if (g2d_num_subs == 0 && g2d_num_subs < 512)
+        g2d_subpaths[g2d_num_subs++] = g2d_pn;
     g2d_pt(cx + r * cosf(a0), cy + r * sinf(a0));
     for (int i = 1; i <= seg; i++)
     {
@@ -8336,24 +8600,56 @@ void mini_2d_arc(float cx, float cy, float r, float a0, float a1, int ccw)
 }
 void mini_2d_fill(float r, float g, float b, float a)
 {
-    int n = g2d_pn;
-    if (n < 3)
+    int num_sub = g2d_num_subs;
+    if (num_sub == 0 && g2d_pn >= 3)
+    {
+        for (int i = 1; i < g2d_pn - 1; i++)
+            g2d_push(G2D_TRI, g2d_px[0], g2d_py[0], g2d_px[i], g2d_py[i],
+                     g2d_px[i + 1], g2d_py[i + 1], 0, r, g, b, a, 0);
         return;
-    for (int i = 1; i < n - 1; i++)
-        g2d_push(G2D_TRI, g2d_px[0], g2d_py[0], g2d_px[i], g2d_py[i],
-                 g2d_px[i + 1], g2d_py[i + 1], 0, r, g, b, a, 0);
+    }
+    for (int k = 0; k < num_sub; k++)
+    {
+        int start = g2d_subpaths[k];
+        int end = (k + 1 < num_sub) ? g2d_subpaths[k + 1] : g2d_pn;
+        int n = end - start;
+        if (n < 3)
+            continue;
+        for (int i = start + 1; i < end - 1; i++)
+            g2d_push(G2D_TRI, g2d_px[start], g2d_py[start], g2d_px[i], g2d_py[i],
+                     g2d_px[i + 1], g2d_py[i + 1], 0, r, g, b, a, 0);
+    }
 }
 void mini_2d_stroke(float r, float g, float b, float a, float w)
 {
-    int n = g2d_pn;
     if (w < 1.0f)
         w = 1.0f;
-    for (int i = 0; i < n - 1; i++)
-        g2d_push(G2D_LINE, g2d_px[i], g2d_py[i], g2d_px[i + 1], g2d_py[i + 1],
-                 0, 0, 0, r, g, b, a, w);
-    if (g2d_closed && n >= 2)
-        g2d_push(G2D_LINE, g2d_px[n - 1], g2d_py[n - 1], g2d_px[0], g2d_py[0],
-                 0, 0, 0, r, g, b, a, w);
+    int num_sub = g2d_num_subs;
+    if (num_sub == 0 && g2d_pn > 0)
+    {
+        for (int i = 0; i < g2d_pn - 1; i++)
+            g2d_push(G2D_LINE, g2d_px[i], g2d_py[i], g2d_px[i + 1], g2d_py[i + 1],
+                     0, 0, 0, r, g, b, a, w);
+        if (g2d_closed && g2d_pn >= 2)
+            g2d_push(G2D_LINE, g2d_px[g2d_pn - 1], g2d_py[g2d_pn - 1], g2d_px[0], g2d_py[0],
+                     0, 0, 0, r, g, b, a, w);
+        return;
+    }
+    for (int k = 0; k < num_sub; k++)
+    {
+        int start = g2d_subpaths[k];
+        int end = (k + 1 < num_sub) ? g2d_subpaths[k + 1] : g2d_pn;
+        for (int i = start; i < end - 1; i++)
+        {
+            g2d_push(G2D_LINE, g2d_px[i], g2d_py[i], g2d_px[i + 1], g2d_py[i + 1],
+                     0, 0, 0, r, g, b, a, w);
+        }
+        if (g2d_closed && (end - start) >= 2)
+        {
+            g2d_push(G2D_LINE, g2d_px[end - 1], g2d_py[end - 1], g2d_px[start], g2d_py[start],
+                     0, 0, 0, r, g, b, a, w);
+        }
+    }
 }
 void mini_2d_fill_rect(float x, float y, float w, float h, float cr, float cg,
                        float cb, float ca)
@@ -8712,6 +9008,53 @@ static void draw_text_wrapped_ex(MiniRenderer *r, const char *text,
 
         float word_w = mini_text_measure_ex(word_buf, fs, ls);
 
+        if (word_w > safe_max_w && word_bytes > 1)
+        {
+            const char *wp = word_start;
+            const char *w_end = word_start + word_bytes;
+            while (wp < w_end)
+            {
+                unsigned char uc = (unsigned char)*wp;
+                int ulen = 1;
+                if (uc >= 0xF0) ulen = 4;
+                else if (uc >= 0xE0) ulen = 3;
+                else if (uc >= 0xC0) ulen = 2;
+                if (wp + ulen > w_end) ulen = (int)(w_end - wp);
+
+                char char_buf[8] = {0};
+                memcpy(char_buf, wp, ulen);
+                char_buf[ulen] = '\0';
+                float char_w = mini_text_measure_ex(char_buf, fs, ls);
+
+                if (line_w > 0.0f && (line_w + char_w > safe_max_w))
+                {
+                    line_buf[line_len] = '\0';
+                    float draw_x = x;
+                    if (align == 1)
+                        draw_x = x + (max_w - line_w) * 0.5f;
+                    else if (align == 2)
+                        draw_x = x + (max_w - line_w);
+                    mini_draw_text_styled(r, draw_x, y + pen_y + v_off, line_buf, fs, cr, cg, cb, ca, ls, font_style);
+                    if (font_weight >= 600)
+                    {
+                        float b_off = (font_weight >= 800) ? 1.0f : 0.6f;
+                        mini_draw_text_styled(r, draw_x + b_off, y + pen_y + v_off, line_buf, fs, cr, cg, cb, ca, ls, font_style);
+                    }
+                    pen_y += lh;
+                    line_len = 0;
+                    line_w = 0.0f;
+                }
+                if (line_len + ulen < (int)sizeof(line_buf) - 1)
+                {
+                    memcpy(line_buf + line_len, char_buf, ulen);
+                    line_len += ulen;
+                    line_w += char_w;
+                }
+                wp += ulen;
+            }
+            continue;
+        }
+
         if (line_w > 0.0f && (line_w + word_w > safe_max_w) && !isspace((unsigned char)word_buf[0]))
         {
             line_buf[line_len] = '\0';
@@ -8947,6 +9290,10 @@ void mini_2d_move_to(float x, float y)
 {
     g2d_pen_x = x;
     g2d_pen_y = y;
+    if (g2d_num_subs < 512)
+    {
+        g2d_subpaths[g2d_num_subs++] = g2d_pn;
+    }
     g2d_pt(x, y);
 }
 
@@ -8992,13 +9339,13 @@ void mini_2d_replay(struct MiniRenderer *r, struct MiniNode *cv)
 
     mini_renderer_pop_clip(r);
 
-    for (int i = 0; i < g2d_n; i++)
-        if (g2d[i].text)
-        {
-            free(g2d[i].text);
-            g2d[i].text = NULL;
-        }
-    g2d_n = 0;
+    /* 架构修复：不再在回放结束时消费/清空 2D 命令缓冲。
+       原实现每帧回放后把 g2d_n 置 0 并 free 文本，导致同步绘制一次（非 rAF）
+       的 canvas 内容在下一帧被 DOM 背景清除后永久消失——静态 canvas 画不出
+       任何东西。浏览器中 canvas backing store 是持久的。现在保留命令，每帧
+       DOM 渲染都会重新回放，静态内容得以持久。rAF 动画的清理由
+       mini_bridge_fire_raf 在确有 rAF 回调时调用 mini_2d_reset() 完成，
+       与原"每帧重新记录"语义一致。多 canvas 共享同一全局缓冲是既有局限。 */
 }
 static void render_media(struct MiniNode *n, MiniRenderer *r)
 {
@@ -9285,17 +9632,30 @@ static void render_node(struct MiniNode *n, MiniRenderer *r)
         int text_grad = (p && p->style.text_gradient == 1);
 
         float fs = (p && p->style.font_size > 0) ? p->style.font_size : (n->style.font_size > 0 ? n->style.font_size : 16.0f);
-        float tr = n->style.color_r, tg = n->style.color_g, tb = n->style.color_b, ta = n->style.color_a;
-
-        if (p && (tr == 0.0f && tg == 0.0f && tb == 0.0f))
+        float tr = 1.0f, tg = 1.0f, tb = 1.0f, ta = 1.0f;
+        struct MiniNode *cur = n->parent ? n->parent : n;
+        while (cur)
         {
-            tr = p->style.color_r;
-            tg = p->style.color_g;
-            tb = p->style.color_b;
-            ta = p->style.color_a;
+            if (cur->style.color_set)
+            {
+                tr = cur->style.color_r;
+                tg = cur->style.color_g;
+                tb = cur->style.color_b;
+                ta = cur->style.color_a;
+                break;
+            }
+            cur = cur->parent;
         }
         if (ta <= 0.0f)
             ta = 1.0f;
+
+        if (p && p->style.has_filter && p->style.filter_invert > 0.0f)
+        {
+            float inv = p->style.filter_invert;
+            tr = tr * (1.0f - inv) + (1.0f - tr) * inv;
+            tg = tg * (1.0f - inv) + (1.0f - tg) * inv;
+            tb = tb * (1.0f - inv) + (1.0f - tb) * inv;
+        }
 
         if (n->text && n->text[0] && fs > 0)
         {
@@ -9354,9 +9714,9 @@ static void render_node(struct MiniNode *n, MiniRenderer *r)
             int align = p ? (p->style.text_align ? p->style.text_align : n->style.text_align) : n->style.text_align;
             float wrap_w = (n->style.w > 0.0f) ? n->style.w : 10000.0f;
 
-            if (p && (p->style.display == MINI_DISPLAY_FLEX || p->style.display == MINI_DISPLAY_INLINE_FLEX))
+            if (p && (p->style.display == MINI_DISPLAY_FLEX || p->style.display == MINI_DISPLAY_INLINE_FLEX || p->style.display == MINI_DISPLAY_INLINE))
             {
-                align = 0; /* Flex 节点已有精准绝对坐标，严禁二次渲染偏移 */
+                align = 0; /* Flex / Inline 节点已有精准绝对坐标，严禁二次渲染偏移 */
             }
             else if (align != 0 && p && p->style.w > 0.0f)
             {
@@ -9787,12 +10147,45 @@ static void render_node(struct MiniNode *n, MiniRenderer *r)
             /* 3. 如果自身带有背景颜色，并且当前不在差异混合模式下，则覆盖背景颜色 */
             if (s->bg_a > 0.0f && !is_difference)
             {
-                if (radii[0] > 0 || radii[1] > 0 || radii[2] > 0 || radii[3] > 0)
-                    mini_draw_rect_rounded_corners(r, s->abs_x, s->abs_y, s->w, draw_h,
-                                                   radii, s->bg_r, s->bg_g, s->bg_b, s->bg_a * op);
+                /* 根部 body/html 的纯色背景已由 mini_draw_clear 在帧开头清除，避免遮挡 WebGL */
+                if (n->tag && (!strcmp(n->tag, "body") || !strcmp(n->tag, "html")))
+                {
+                    /* skip duplicate solid fill on root body/html */
+                }
                 else
-                    mini_draw_rect(r, s->abs_x, s->abs_y, s->w, draw_h,
-                                   s->bg_r, s->bg_g, s->bg_b, s->bg_a * op);
+                {
+                    float cr = s->bg_r, cg = s->bg_g, cb = s->bg_b;
+                if (s->has_filter)
+                {
+                    if (s->filter_invert > 0.0f)
+                    {
+                        float inv = s->filter_invert;
+                        cr = cr * (1.0f - inv) + (1.0f - cr) * inv;
+                        cg = cg * (1.0f - inv) + (1.0f - cg) * inv;
+                        cb = cb * (1.0f - inv) + (1.0f - cb) * inv;
+                    }
+                    if (s->filter_grayscale > 0.0f)
+                    {
+                        float gs = s->filter_grayscale;
+                        float lum = 0.299f * cr + 0.587f * cg + 0.114f * cb;
+                        cr = cr * (1.0f - gs) + lum * gs;
+                        cg = cg * (1.0f - gs) + lum * gs;
+                        cb = cb * (1.0f - gs) + lum * gs;
+                    }
+                    if (s->filter_brightness != 1.0f && s->filter_brightness > 0.0f)
+                    {
+                        cr *= s->filter_brightness;
+                        cg *= s->filter_brightness;
+                        cb *= s->filter_brightness;
+                    }
+                }
+                    if (radii[0] > 0 || radii[1] > 0 || radii[2] > 0 || radii[3] > 0)
+                        mini_draw_rect_rounded_corners(r, s->abs_x, s->abs_y, s->w, draw_h,
+                                                       radii, cr, cg, cb, s->bg_a * op);
+                    else
+                        mini_draw_rect(r, s->abs_x, s->abs_y, s->w, draw_h,
+                                       cr, cg, cb, s->bg_a * op);
+                }
             }
         }
     }
@@ -12267,71 +12660,15 @@ static char *css_expand_nesting(const char *in)
    "Zeno" animation-clock reset the old loop guarded against stays fixed,
    because only the winning declaration ever reaches mini_style_set.        */
 
-static uint32_t cw_prop_hash(const char *s)
-{
-    uint32_t h = 2166136261u;
-    while (*s)
-    {
-        h ^= (uint8_t)*s++;
-        h *= 16777619u;
-    }
-    return h ? h : 1; /* never 0 (0 = empty slot sentinel) */
-}
-
-static uint32_t cw_slot(const void *node, uint32_t ph, uint8_t pseudo)
-{
-    uintptr_t n = (uintptr_t)node;
-    n ^= n >> 15;
-    uint32_t h = (uint32_t)n ^ (ph * 2654435761u) ^ ((uint32_t)pseudo + 1) * 2246822519u;
-    return h & (MINI_CW_CAP - 1);
-}
-
-static int cw_seen(const void *node, uint32_t ph, uint8_t pseudo)
-{
-    uint32_t h = cw_slot(node, ph, pseudo);
-    for (int i = 0; i < 8; i++)
-    {
-        CascadeWinner *w = &g_cw[(h + i) & (MINI_CW_CAP - 1)];
-        if (!w->node)
-            return 0; /* empty slot ends the probe chain */
-        if (w->node == node && w->prop_hash == ph && w->pseudo == pseudo)
-            return 1;
-    }
-    return 0; /* rare probe overflow: treat as not-seen (conservative re-apply) */
-}
-
-static void cw_mark(const void *node, uint32_t ph, uint8_t pseudo)
-{
-    uint32_t h = cw_slot(node, ph, pseudo);
-    for (int i = 0; i < 8; i++)
-    {
-        CascadeWinner *w = &g_cw[(h + i) & (MINI_CW_CAP - 1)];
-        if (!w->node)
-        {
-            w->node = node;
-            w->prop_hash = ph;
-            w->pseudo = pseudo;
-            return;
-        }
-        if (w->node == node && w->prop_hash == ph && w->pseudo == pseudo)
-            return; /* already marked */
-    }
-    /* 8-slot chain full: skip marking (this (node,prop,pseudo) may re-apply
-       later as a conservative miss — same behaviour as the old loop's rare
-       fallthrough, never a hard correctness regression). */
-}
-
-static void cw_clear(void)
-{
-    memset(g_cw, 0, sizeof(g_cw));
-}
-
 static void snapshot_base_styles(struct MiniNode *n);
 
 void mini_css_apply(MiniDocument *doc, const char *css)
 {
     if (!doc || !css)
         return;
+
+    MiniDocument *prev_active = g_active_doc;
+    g_active_doc = doc;
 
     if (!g_restyling)
     {
@@ -12348,7 +12685,10 @@ void mini_css_apply(MiniDocument *doc, const char *css)
 
     char *clean_css = strip_css_comments(css);
     if (!clean_css)
+    {
+        g_active_doc = prev_active;
         return;
+    }
 
     int cvw = g_lctx.vw > 0.0f ? (int)g_lctx.vw : 1280;
     int cvh = g_lctx.vh > 0.0f ? (int)g_lctx.vh : 720;
@@ -12381,6 +12721,7 @@ void mini_css_apply(MiniDocument *doc, const char *css)
         free(rules);
         free(decls);
         free(clean_css);
+        g_active_doc = prev_active;
         return;
     }
     int nrules = 0, ndecls = 0;
@@ -12557,6 +12898,23 @@ void mini_css_apply(MiniDocument *doc, const char *css)
        for 32K × 16-byte slots) — dwarfed by the cubic loop it replaces. */
     cw_clear();
 
+    /* Pass 0: Register all CSS custom properties (--xxx) first so that
+       all design tokens and CSS variables are available during cascade evaluation. */
+    for (int i = 0; i < ndecls; i++)
+    {
+        CssDecl *D = &decls[i];
+        if (D->prop[0] == '-' && D->prop[1] == '-')
+        {
+            const char *sel = rules[D->rule].sel;
+            struct MiniNode *out[4096];
+            int c = mini_dom_query_selector_all(doc, sel, out, 4096);
+            for (int k = 0; k < c; k++)
+            {
+                mini_node_set_var(out[k], D->prop + 2, D->val);
+            }
+        }
+    }
+
     /* Process declarations in DESCENDING priority order (highest spec /
        !important / source-order first). For each (host node, prop, pseudo)
        the FIRST decl to reach it wins; later (lower-priority) decls of the
@@ -12567,6 +12925,8 @@ void mini_css_apply(MiniDocument *doc, const char *css)
     for (int i = ndecls - 1; i >= 0; i--)
     {
         CssDecl *D = &decls[i];
+        if (D->prop[0] == '-' && D->prop[1] == '-')
+            continue; /* already handled in Pass 0 */
         const char *sel = rules[D->rule].sel;
         /* ::before / ::after: strip the pseudo-element for matching (the host
            matches), and route the `content` declaration to the host's
@@ -12574,7 +12934,7 @@ void mini_css_apply(MiniDocument *doc, const char *css)
            to the host via mini_style_set — a best-effort approximation (a
            real pseudo generates an anonymous inline box; we draw the content
            text at the host's content origin instead — see render_node).       */
-        int pseudo = 0; /* 0 none, 1 ::before, 2 ::after */
+        int pseudo = 0; /* 0 none, 1 ::before, 2 ::after, 3 ::placeholder */
         char match_sel[128];
         const char *b = strstr(sel, "::before");
         if (!b)
@@ -12582,6 +12942,15 @@ void mini_css_apply(MiniDocument *doc, const char *css)
         const char *a = strstr(sel, "::after");
         if (!a)
             a = strstr(sel, ":after");
+        const char *ph_sel = strstr(sel, "::placeholder");
+        if (!ph_sel)
+            ph_sel = strstr(sel, ":placeholder");
+        if (!ph_sel)
+            ph_sel = strstr(sel, "::-webkit-input-placeholder");
+        if (!ph_sel)
+            ph_sel = strstr(sel, "::-moz-placeholder");
+        if (!ph_sel)
+            ph_sel = strstr(sel, ":-ms-input-placeholder");
         if (b)
         {
             size_t L = (size_t)(b - sel);
@@ -12599,6 +12968,17 @@ void mini_css_apply(MiniDocument *doc, const char *css)
             memcpy(match_sel, sel, L);
             match_sel[L] = 0;
             pseudo = 2;
+        }
+        else if (ph_sel)
+        {
+            size_t L = (size_t)(ph_sel - sel);
+            if (L >= sizeof match_sel)
+                L = sizeof match_sel - 1;
+            memcpy(match_sel, sel, L);
+            match_sel[L] = 0;
+            if (L == 0 || (L == 1 && match_sel[0] == '*'))
+                strcpy(match_sel, "input,textarea");
+            pseudo = 3;
         }
         else
         {
@@ -12627,20 +13007,24 @@ void mini_css_apply(MiniDocument *doc, const char *css)
                 if (out[k]->tag && !strncmp(out[k]->tag, "::", 2))
                     continue;
 
-                struct MiniNode *ps_node = (pseudo == 1) ? out[k]->pseudo_before : out[k]->pseudo_after;
+                struct MiniNode *ps_node = (pseudo == 1) ? out[k]->pseudo_before : (pseudo == 2 ? out[k]->pseudo_after : out[k]->pseudo_placeholder);
                 if (!ps_node)
                 {
-                    ps_node = mini_node_create_element((pseudo == 1) ? "::before" : "::after");
+                    ps_node = mini_node_create_element((pseudo == 1) ? "::before" : (pseudo == 2 ? "::after" : "::placeholder"));
                     ps_node->style.display = MINI_DISPLAY_INLINE; /* 伪元素默认流式显示模式为 inline */
                     if (pseudo == 1)
                     {
                         out[k]->pseudo_before = ps_node;
                         mini_node_insert_before(out[k], ps_node, out[k]->first_child);
                     }
-                    else
+                    else if (pseudo == 2)
                     {
                         out[k]->pseudo_after = ps_node;
                         mini_node_append_child(out[k], ps_node);
+                    }
+                    else if (pseudo == 3)
+                    {
+                        out[k]->pseudo_placeholder = ps_node;
                     }
                 }
                 if (!strcmp(D->prop, "content"))
@@ -12756,6 +13140,7 @@ void mini_css_apply(MiniDocument *doc, const char *css)
     free(decls);
     free(processed);
     free(clean_css);
+    g_active_doc = prev_active;
 }
 const char *mini_doc_get_title(const struct MiniDocument *doc)
 {

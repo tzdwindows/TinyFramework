@@ -182,6 +182,18 @@ const char *mini_events_dnd_get_data(MiniEventState *st);
 void mini_events_handle_drop_files(MiniEventState *st, const char *const *paths,
                                    int count, float x, float y);
 
+/* ---- scrollbar state ---- */
+typedef enum MiniScrollbarState
+{
+    MINI_SCROLLBAR_IDLE = 0,
+    MINI_SCROLLBAR_HOVER = 1,
+    MINI_SCROLLBAR_DRAGGING = 2,
+    MINI_SCROLLBAR_RELEASED = 3
+} MiniScrollbarState;
+
+MiniScrollbarState mini_events_get_scrollbar_state(const MiniEventState *st);
+void mini_events_release_capture(MiniEventState *st);
+
 /* ---- mouse gestures ---- */
 typedef struct MiniGestureState
 {

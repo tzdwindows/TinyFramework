@@ -74,7 +74,10 @@ $SOURCES = @(
     "src\mini_h2.c",
     "src\mini_h3.c",
     "src\mini_eventloop.c",
-    "src\mini_devtools.c"
+    "src\mini_devtools.c",
+    "src\mini_webgl_ext.c",
+    "src\mini_bidi.c",
+    "src\mini_shaping.c"
 )
 
 # 5. Library Directories (-L) and Libraries (-l)

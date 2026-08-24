@@ -2000,6 +2000,64 @@ static void input_domain(MiniCDP *cdp, int ci, const char *msg, long id, const c
                 mini_dom_restyle((struct MiniDocument *)h->doc);
         }
     }
+    if (!strcmp(m, "dispatchDragAndDrop") && h && h->events)
+    {
+        double x = cdp_jnum(msg, "x");
+        double y = cdp_jnum(msg, "y");
+        const char *f_pos = strstr(msg, "\"files\":");
+        if (f_pos)
+        {
+            const char *arr_start = strchr(f_pos, '[');
+            if (arr_start)
+            {
+                const char *p = arr_start + 1;
+                char *file_paths[64] = {0};
+                int file_count = 0;
+                while (*p && *p != ']' && file_count < 64)
+                {
+                    while (*p && (*p == ' ' || *p == ',' || *p == '\t' || *p == '\r' || *p == '\n')) p++;
+                    if (*p == '"')
+                    {
+                        p++;
+                        const char *end = p;
+                        while (*end && *end != '"')
+                        {
+                            if (*end == '\\' && *(end + 1)) end += 2;
+                            else end++;
+                        }
+                        size_t flen = end - p;
+                        char fpath[512] = {0};
+                        if (flen < sizeof(fpath))
+                        {
+                            size_t di = 0;
+                            for (size_t si = 0; si < flen && di < sizeof(fpath) - 1; si++)
+                            {
+                                if (p[si] == '\\' && p[si + 1] == '\\') { fpath[di++] = '\\'; si++; }
+                                else if (p[si] == '\\' && p[si + 1] == '/') { fpath[di++] = '/'; si++; }
+                                else { fpath[di++] = p[si]; }
+                            }
+                            fpath[di] = '\0';
+                            file_paths[file_count] = _strdup(fpath);
+                            file_count++;
+                        }
+                        p = (*end == '"') ? end + 1 : end;
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+                if (file_count > 0)
+                {
+                    mini_events_handle_drop_files((MiniEventState *)h->events, (const char *const *)file_paths, file_count, (float)x, (float)y);
+                    for (int fi = 0; fi < file_count; fi++)
+                        free(file_paths[fi]);
+                }
+            }
+        }
+        reply_empty(cdp, ci, id);
+        return;
+    }
     if (!strcmp(m, "dispatchKeyEvent") && h && h->events)
     {
         char type[32] = {0};

@@ -49,6 +49,7 @@ struct MiniEventState
     double last_click_time; /* seconds, for dblclick */
 
     int vw, vh; /* last reported viewport (for resize) */
+    int buttons_mask; /* currently held mouse buttons bitmask (1=left, 2=right, 4=middle) */
 
     /* Native form-control interaction state. The host input path used to only
        *dispatch* key/mouse events and rely on JS to mutate the DOM — which
@@ -127,14 +128,46 @@ struct MiniEventState
         const char *action_js;
     } gesture;
 
-    /* Scrollbar thumb drag */
+    /* Scrollbar thumb drag & state machine */
     int drag_scrollbar;
+    MiniScrollbarState scrollbar_state;
     float scrollbar_drag_y0;
     float scrollbar_scroll_y0;
 
     MiniGestureCb gesture_cb;
     void *gesture_ud;
 };
+
+MiniScrollbarState mini_events_get_scrollbar_state(const MiniEventState *st)
+{
+    return st ? st->scrollbar_state : MINI_SCROLLBAR_IDLE;
+}
+
+void mini_events_release_capture(MiniEventState *st)
+{
+    if (!st) return;
+    st->drag_scrollbar = 0;
+    st->scrollbar_state = MINI_SCROLLBAR_IDLE;
+    if (st->drag_range)
+    {
+        free(st->edit_snapshot);
+        st->edit_snapshot = NULL;
+        st->drag_range = NULL;
+    }
+    st->dnd.source = NULL;
+    st->dnd.started = 0;
+    st->move.node = NULL;
+    st->move.active = 0;
+    st->sel.is_selecting = 0;
+    if (st->press_target)
+    {
+        mini_node_set_interaction_state(st->press_target, -1, 0, -1);
+        st->press_target = NULL;
+    }
+    st->press_button = -1;
+    if (st->doc)
+        st->doc->dirty = 1;
+}
 
 void mini_events_set_gesture_cb(MiniEventState *st, MiniGestureCb cb, void *ud)
 {
@@ -356,7 +389,15 @@ static void fire_at(MiniEventState *st, struct MiniNode *node, MiniEvent *ev)
         if (!l->active || l->target != node)
             continue;
         if (strcmp(l->type, ev->type) != 0)
-            continue;
+        {
+            int match_ptr = 0;
+            if (!strcmp(ev->type, "mousedown") && !strcmp(l->type, "pointerdown")) match_ptr = 1;
+            else if (!strcmp(ev->type, "mousemove") && !strcmp(l->type, "pointermove")) match_ptr = 1;
+            else if (!strcmp(ev->type, "mouseup") && !strcmp(l->type, "pointerup")) match_ptr = 1;
+            else if (!strcmp(ev->type, "mouseleave") && !strcmp(l->type, "pointercancel")) match_ptr = 1;
+            if (!match_ptr)
+                continue;
+        }
         int fire;
         if (ev->phase == 0)
             fire = l->useCapture; /* capture */
@@ -1788,9 +1829,11 @@ void mini_events_handle_mouse_move(MiniEventState *st, float x, float y, int mod
 
     struct MiniNode *ev_t = t ? t : st->doc->body;
 
-    /* Drag scrollbar */
+    /* Drag scrollbar & state machine */
+    float vw_chk = (st->vw > 0) ? (float)st->vw : 1280.0f;
     if (st->drag_scrollbar && st->doc && st->doc->max_scroll_y > 0.0f)
     {
+        st->scrollbar_state = MINI_SCROLLBAR_DRAGGING;
         float vh = (st->vh > 0) ? (float)st->vh : 800.0f;
         float total_h = st->doc->max_scroll_y + vh;
         float thumb_h = vh * (vh / total_h);
@@ -1802,7 +1845,14 @@ void mini_events_handle_mouse_move(MiniEventState *st, float x, float y, int mod
         if (new_sy < 0.0f) new_sy = 0.0f;
         if (new_sy > st->doc->max_scroll_y) new_sy = st->doc->max_scroll_y;
         st->doc->scroll_y = new_sy;
-        st->doc->dirty = 1;
+        st->doc->paint_dirty = 1;
+    }
+    else
+    {
+        if (x >= vw_chk - 14.0f && st->doc && st->doc->max_scroll_y > 0.0f)
+            st->scrollbar_state = MINI_SCROLLBAR_HOVER;
+        else
+            st->scrollbar_state = MINI_SCROLLBAR_IDLE;
     }
 
     /* Mouse Gesture tracking */
@@ -1877,6 +1927,8 @@ void mini_events_handle_mouse_move(MiniEventState *st, float x, float y, int mod
         MiniEvent ev = make_mouse("mousemove", ev_t, x, y, mods);
         ev.movementX = dx;
         ev.movementY = dy;
+        ev.button = 0;
+        ev.buttons = st->buttons_mask;
         ev.bubbles = 1;
         mini_event_dispatch(st, &ev, ev_t);
     }
@@ -1929,22 +1981,25 @@ void mini_events_handle_mouse_button(MiniEventState *st, int button, int action,
     {
         /* Check scrollbar click */
         float vw = (st->vw > 0) ? (float)st->vw : 1280.0f;
-        if (w3c == 0 && x >= vw - 14.0f && st->doc->max_scroll_y > 0.0f)
+        if (w3c == 0 && x >= vw - 14.0f && st->doc && st->doc->max_scroll_y > 0.0f)
         {
             st->drag_scrollbar = 1;
+            st->scrollbar_state = MINI_SCROLLBAR_DRAGGING;
             st->scrollbar_drag_y0 = y;
             st->scrollbar_scroll_y0 = st->doc->scroll_y;
+            if (st->doc) st->doc->dirty = 1;
             return;
         }
 
         st->press_target = t;
         st->press_button = button;
+        int mask_bit = (w3c == 0) ? 1 : (w3c == 2) ? 2 : 4;
+        st->buttons_mask |= mask_bit;
         if (t)
         {
             MiniEvent ev = make_mouse("mousedown", t, x, y, mods);
             ev.button = w3c;
-            ev.buttons = (w3c == 0) ? 1 : (w3c == 2) ? 2
-                                                     : 4;
+            ev.buttons = st->buttons_mask;
             ev.bubbles = 1;
             mini_event_dispatch(st, &ev, t);
             mini_node_set_interaction_state(t, -1, 1, -1);
@@ -2045,6 +2100,15 @@ void mini_events_handle_mouse_button(MiniEventState *st, int button, int action,
     }
     else /* release */
     {
+        /* Always clear scrollbar drag */
+        int was_drag_scrollbar = st->drag_scrollbar;
+        st->drag_scrollbar = 0;
+        float vw = (st->vw > 0) ? (float)st->vw : 1280.0f;
+        st->scrollbar_state = (x >= vw - 14.0f && st->doc && st->doc->max_scroll_y > 0.0f)
+                              ? MINI_SCROLLBAR_HOVER : MINI_SCROLLBAR_IDLE;
+        if (was_drag_scrollbar && st->doc)
+            st->doc->dirty = 1;
+
         /* a selection drag is over; the selection itself persists. */
         st->sel.is_selecting = 0;
 
@@ -2069,20 +2133,26 @@ void mini_events_handle_mouse_button(MiniEventState *st, int button, int action,
             mini_events_restyle(st);
         }
 
-        if (t)
+        struct MiniNode *rel_node = t ? t : (st->press_target ? st->press_target : (st->doc ? st->doc->body : NULL));
+        int mask_bit = (w3c == 0) ? 1 : (w3c == 2) ? 2 : 4;
+        st->buttons_mask &= ~mask_bit;
+        if (rel_node)
         {
-            MiniEvent ev = make_mouse("mouseup", t, x, y, mods);
+            MiniEvent ev = make_mouse("mouseup", rel_node, x, y, mods);
             ev.button = w3c;
+            ev.buttons = st->buttons_mask;
             ev.bubbles = 1;
-            mini_event_dispatch(st, &ev, t);
-            mini_node_set_interaction_state(t, -1, 0, -1);
+            mini_event_dispatch(st, &ev, rel_node);
+            mini_node_set_interaction_state(rel_node, -1, 0, -1);
+            if (st->press_target && st->press_target != rel_node)
+                mini_node_set_interaction_state(st->press_target, -1, 0, -1);
 
             /* click: press + release on the same target */
-            /* click: press + release on the same target */
-            if (t == st->press_target)
+            if (t && t == st->press_target)
             {
                 ev = make_mouse("click", t, x, y, mods);
                 ev.button = w3c;
+                ev.buttons = st->buttons_mask;
                 ev.bubbles = 1;
                 mini_event_dispatch(st, &ev, t);
 
@@ -2113,6 +2183,46 @@ void mini_events_handle_mouse_button(MiniEventState *st, int button, int action,
                             }
                             break;
                         }
+                    }
+
+                    /* Checkbox & label handling */
+                    struct MiniNode *chk_node = NULL;
+                    if (t->tag && !strcmp(t->tag, "input"))
+                    {
+                        const char *type = mini_node_get_attribute(t, "type");
+                        if (type && !strcmp(type, "checkbox"))
+                            chk_node = t;
+                    }
+                    else if (t->tag && !strcmp(t->tag, "label"))
+                    {
+                        const char *for_id = mini_node_get_attribute(t, "for");
+                        if (for_id && for_id[0] && st->doc)
+                        {
+                            char sel[128];
+                            snprintf(sel, sizeof(sel), "#%s", for_id);
+                            chk_node = mini_dom_query_selector(st->doc, sel);
+                        }
+                    }
+
+                    if (chk_node)
+                    {
+                        if (mini_node_get_attribute(chk_node, "checked"))
+                        {
+                            mini_node_remove_attribute(chk_node, "checked");
+                        }
+                        else
+                        {
+                            mini_node_set_attribute(chk_node, "checked", "");
+                        }
+                        if (st->doc)
+                        {
+                            st->doc->dirty = 1;
+                            st->doc->paint_dirty = 1;
+                        }
+                        MiniEvent chev = make_mouse("change", chk_node, x, y, mods);
+                        chev.bubbles = 1;
+                        mini_event_dispatch(st, &chev, chk_node);
+                        mini_events_restyle(st);
                     }
                 }
 
@@ -2284,9 +2394,10 @@ void mini_events_handle_wheel(MiniEventState *st, float x, float y,
         t = st->doc->body;
     MiniEvent ev = make_mouse("wheel", t, x, y, mods);
     ev.bubbles = 1;
-    ev.deltaX = dx;
-    ev.deltaY = dy;
+    ev.deltaX = dx * 100.0f;
+    ev.deltaY = -dy * 100.0f;
     ev.deltaMode = 0; /* pixels */
+    ev.buttons = st->buttons_mask;
     mini_event_dispatch(st, &ev, t);
 
     if (!ev.preventDefault)
@@ -2308,7 +2419,7 @@ void mini_events_handle_wheel(MiniEventState *st, float x, float y,
         {
             st->doc->scroll_y = new_sy;
             st->doc->scroll_x = new_sx;
-            st->doc->dirty = 1;
+            st->doc->paint_dirty = 1;
 
             MiniEvent sev;
             memset(&sev, 0, sizeof sev);

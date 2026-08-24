@@ -12,9 +12,7 @@
  */
 #include "mini_webgl_ext.h"
 
-/* stb_image is provided as a single header by the build (see CMake:
-   add the stb include dir). We only pull the declarations here; the
-   implementation is compiled once in mini_renderer.c (or a dedicated TU). */
+#define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
 #include <string.h>
@@ -79,5 +77,19 @@ int mini_wgl_tex_image_from_file(MiniWGL *gl, const char *path,
     if (gl->GenerateMipmap) gl->GenerateMipmap(WGL_TEXTURE_2D);
     if (out_w) *out_w = w; if (out_h) *out_h = h;
     stbi_image_free(px);                        /* GPU has copied; free decode buf */
+    return 0;
+}
+
+int mini_wgl_tex_image_from_memory(MiniWGL *gl, const unsigned char *buf, int len,
+                                   int *out_w, int *out_h) {
+    if (!gl || !gl->TexImage2D || !buf || len <= 0) return -1;
+    int w=0, h=0, ch=0;
+    unsigned char *px = stbi_load_from_memory(buf, len, &w, &h, &ch, 4);
+    if (!px) return -2;
+    gl->TexImage2D(WGL_TEXTURE_2D, 0, WGL_RGBA, w, h, 0,
+                   WGL_RGBA, WGL_UNSIGNED_BYTE, px);
+    if (gl->GenerateMipmap) gl->GenerateMipmap(WGL_TEXTURE_2D);
+    if (out_w) *out_w = w; if (out_h) *out_h = h;
+    stbi_image_free(px);
     return 0;
 }

@@ -74,6 +74,8 @@ void mini_wgl_uniform_matrix(MiniWGL *gl, GLint loc, int dim,
  */
 int mini_wgl_tex_image_from_file(MiniWGL *gl, const char *path,
                                  int *out_w, int *out_h);
+int mini_wgl_tex_image_from_memory(MiniWGL *gl, const unsigned char *buf, int len,
+                                   int *out_w, int *out_h);
 
 #ifdef __cplusplus
 }
