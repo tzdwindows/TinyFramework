@@ -5378,16 +5378,19 @@ static void layout_node(struct MiniNode *n, float x, float y,
         if ((n->style.font_size <= 0.0f || !n->style.font_set) && n->parent->style.font_size > 0.0f)
         {
             n->style.font_size = n->parent->style.font_size;
+            if (n->has_base_style) n->base_style.font_size = n->style.font_size;
         }
         if (!n->style.letter_set && n->parent->style.letter_set)
         {
             n->style.len_letter = n->parent->style.len_letter;
             n->style.letter_set = 1;
+            if (n->has_base_style) { n->base_style.len_letter = n->style.len_letter; n->base_style.letter_set = 1; }
         }
         if (!n->style.line_height_set && n->parent->style.line_height_set)
         {
             n->style.len_line_height = n->parent->style.len_line_height;
             n->style.line_height_set = 1;
+            if (n->has_base_style) { n->base_style.len_line_height = n->style.len_line_height; n->base_style.line_height_set = 1; }
         }
         if (!n->style.color_set && n->parent && n->parent->style.color_set)
         {
@@ -5396,18 +5399,28 @@ static void layout_node(struct MiniNode *n, float x, float y,
             n->style.color_b = n->parent->style.color_b;
             n->style.color_a = n->parent->style.color_a;
             n->style.color_set = 1;
+            if (n->has_base_style) {
+                n->base_style.color_r = n->style.color_r;
+                n->base_style.color_g = n->style.color_g;
+                n->base_style.color_b = n->style.color_b;
+                n->base_style.color_a = n->style.color_a;
+                n->base_style.color_set = 1;
+            }
         }
         if (n->style.text_align == 0 && n->parent->style.text_align != 0)
         {
             n->style.text_align = n->parent->style.text_align;
+            if (n->has_base_style) n->base_style.text_align = n->style.text_align;
         }
         if (n->style.text_transform == 0 && n->parent->style.text_transform != 0)
         {
             n->style.text_transform = n->parent->style.text_transform;
+            if (n->has_base_style) n->base_style.text_transform = n->style.text_transform;
         }
         if (n->parent->style.perspective > 0.0f && n->style.perspective == 0.0f)
         {
             n->style.perspective = n->parent->style.perspective;
+            if (n->has_base_style) n->base_style.perspective = n->style.perspective;
         }
     }
     if (n->type == MN_TEXT_NODE)
@@ -8927,7 +8940,7 @@ static void draw_text_wrapped_ex(MiniRenderer *r, const char *text,
 
     float safe_max_w = max_w + 4.0f;
     float pen_y = 0.0f;
-    float v_off = (lh > fs) ? (lh - fs) * 0.5f : 0.0f; /* 提取并注入行高垂直补偿 */
+    float v_off = (lh > fs) ? (lh - fs) * 0.5f : 0.0f;
     const char *p = text;
     char line_buf[1024] = {0};
     int line_len = 0;
@@ -8937,21 +8950,21 @@ static void draw_text_wrapped_ex(MiniRenderer *r, const char *text,
     {
         if (*p == '\n' || *p == '\r')
         {
-            if (*p == '\r' && p[1] == '\n')
-                p++;
+            if (*p == '\r' && p[1] == '\n') p++;
             p++;
             line_buf[line_len] = '\0';
             float draw_x = x;
-            if (align == 1)
-                draw_x = floorf(x + (max_w - line_w) * 0.5f + 0.5f);
-            else if (align == 2)
-                draw_x = floorf(x + (max_w - line_w) + 0.5f);
+            if (align == 1) draw_x = x + (max_w - line_w) * 0.5f;
+            else if (align == 2) draw_x = x + (max_w - line_w);
+            draw_x = floorf(draw_x + 0.5f);
+
             if (line_len > 0)
             {
                 mini_draw_text_styled(r, draw_x, floorf(y + pen_y + v_off + 0.5f), line_buf, fs, cr, cg, cb, ca, ls, font_style);
                 if (font_weight >= 600)
                 {
-                    float b_off = (font_weight >= 800) ? 1.0f : 0.6f;
+                    /* 消除小数偏移干扰：加粗偏移量必须被强制限定为纯整数，防止亚像素计算把1像素塌陷吃回原点 */
+                    float b_off = (font_weight >= 800) ? 2.0f : 1.0f;
                     mini_draw_text_styled(r, draw_x + b_off, floorf(y + pen_y + v_off + 0.5f), line_buf, fs, cr, cg, cb, ca, ls, font_style);
                 }
             }
@@ -8965,39 +8978,19 @@ static void draw_text_wrapped_ex(MiniRenderer *r, const char *text,
         int word_bytes = 0;
         unsigned char c0 = (unsigned char)*p;
 
-        if (isspace(c0))
-        {
-            word_bytes = 1;
-            p++;
-        }
+        if (isspace(c0)) { word_bytes = 1; p++; }
         else if (c0 >= 0x80)
         {
             int clen = 1;
-            if (c0 >= 0xF0)
-                clen = 4;
-            else if (c0 >= 0xE0)
-                clen = 3;
-            else if (c0 >= 0xC0)
-                clen = 2;
-
-            for (int i = 0; i < clen && *p; i++)
-            {
-                word_bytes++;
-                p++;
-            }
+            if (c0 >= 0xF0) clen = 4;
+            else if (c0 >= 0xE0) clen = 3;
+            else if (c0 >= 0xC0) clen = 2;
+            for (int i = 0; i < clen && *p; i++) { word_bytes++; p++; }
         }
         else
         {
-            while (*p && !isspace((unsigned char)*p) && (unsigned char)*p < 0x80)
-            {
-                word_bytes++;
-                p++;
-            }
-            if (word_bytes == 0)
-            {
-                p++;
-                continue;
-            }
+            while (*p && !isspace((unsigned char)*p) && (unsigned char)*p < 0x80) { word_bytes++; p++; }
+            if (word_bytes == 0) { p++; continue; }
         }
 
         char word_buf[128];
@@ -9030,15 +9023,15 @@ static void draw_text_wrapped_ex(MiniRenderer *r, const char *text,
                 {
                     line_buf[line_len] = '\0';
                     float draw_x = x;
-                    if (align == 1)
-                        draw_x = x + (max_w - line_w) * 0.5f;
-                    else if (align == 2)
-                        draw_x = x + (max_w - line_w);
-                    mini_draw_text_styled(r, draw_x, y + pen_y + v_off, line_buf, fs, cr, cg, cb, ca, ls, font_style);
+                    if (align == 1) draw_x = x + (max_w - line_w) * 0.5f;
+                    else if (align == 2) draw_x = x + (max_w - line_w);
+                    draw_x = floorf(draw_x + 0.5f);
+
+                    mini_draw_text_styled(r, draw_x, floorf(y + pen_y + v_off + 0.5f), line_buf, fs, cr, cg, cb, ca, ls, font_style);
                     if (font_weight >= 600)
                     {
-                        float b_off = (font_weight >= 800) ? 1.0f : 0.6f;
-                        mini_draw_text_styled(r, draw_x + b_off, y + pen_y + v_off, line_buf, fs, cr, cg, cb, ca, ls, font_style);
+                        float b_off = (font_weight >= 800) ? 2.0f : 1.0f;
+                        mini_draw_text_styled(r, draw_x + b_off, floorf(y + pen_y + v_off + 0.5f), line_buf, fs, cr, cg, cb, ca, ls, font_style);
                     }
                     pen_y += lh;
                     line_len = 0;
@@ -9059,15 +9052,15 @@ static void draw_text_wrapped_ex(MiniRenderer *r, const char *text,
         {
             line_buf[line_len] = '\0';
             float draw_x = x;
-            if (align == 1)
-                draw_x = x + (max_w - line_w) * 0.5f;
-            else if (align == 2)
-                draw_x = x + (max_w - line_w);
-            mini_draw_text_styled(r, draw_x, y + pen_y + v_off, line_buf, fs, cr, cg, cb, ca, ls, font_style);
+            if (align == 1) draw_x = x + (max_w - line_w) * 0.5f;
+            else if (align == 2) draw_x = x + (max_w - line_w);
+            draw_x = floorf(draw_x + 0.5f);
+
+            mini_draw_text_styled(r, draw_x, floorf(y + pen_y + v_off + 0.5f), line_buf, fs, cr, cg, cb, ca, ls, font_style);
             if (font_weight >= 600)
             {
-                float b_off = (font_weight >= 800) ? 1.0f : 0.6f;
-                mini_draw_text_styled(r, draw_x + b_off, y + pen_y + v_off, line_buf, fs, cr, cg, cb, ca, ls, font_style);
+                float b_off = (font_weight >= 800) ? 2.0f : 1.0f;
+                mini_draw_text_styled(r, draw_x + b_off, floorf(y + pen_y + v_off + 0.5f), line_buf, fs, cr, cg, cb, ca, ls, font_style);
             }
             pen_y += lh;
             line_len = 0;
@@ -9086,15 +9079,15 @@ static void draw_text_wrapped_ex(MiniRenderer *r, const char *text,
     {
         line_buf[line_len] = '\0';
         float draw_x = x;
-        if (align == 1)
-            draw_x = x + (max_w - line_w) * 0.5f;
-        else if (align == 2)
-            draw_x = x + (max_w - line_w);
-        mini_draw_text_styled(r, draw_x, y + pen_y + v_off, line_buf, fs, cr, cg, cb, ca, ls, font_style);
+        if (align == 1) draw_x = x + (max_w - line_w) * 0.5f;
+        else if (align == 2) draw_x = x + (max_w - line_w);
+        draw_x = floorf(draw_x + 0.5f);
+
+        mini_draw_text_styled(r, draw_x, floorf(y + pen_y + v_off + 0.5f), line_buf, fs, cr, cg, cb, ca, ls, font_style);
         if (font_weight >= 600)
         {
-            float b_off = (font_weight >= 800) ? 1.0f : 0.6f;
-            mini_draw_text_styled(r, draw_x + b_off, y + pen_y + v_off, line_buf, fs, cr, cg, cb, ca, ls, font_style);
+            float b_off = (font_weight >= 800) ? 2.0f : 1.0f;
+            mini_draw_text_styled(r, draw_x + b_off, floorf(y + pen_y + v_off + 0.5f), line_buf, fs, cr, cg, cb, ca, ls, font_style);
         }
     }
 }

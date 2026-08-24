@@ -1282,11 +1282,13 @@ float mini_text_measure_ex(const char *text, float font_size, float letter_spaci
     if (!text || !*text || font_size <= 0)
         return 0.0f;
     font_init();
+
+    float w = 0.0f;
+    const char *p = text;
+    int len = 0;
+
     if (g_active_renderer && g_active_renderer->ttf_loaded)
     {
-        float w = 0.0f;
-        const char *p = text;
-        int len = 0;
         while (*p)
         {
             unsigned int cp = utf8_next(&p, &len);
@@ -1296,15 +1298,22 @@ float mini_text_measure_ex(const char *text, float font_size, float letter_spaci
             if (g)
                 w += g->advance + letter_spacing;
             else
-                w += FONT_ADV(font_size) + letter_spacing;
+                w += (cp >= 0x2E80 ? font_size : FONT_ADV(font_size)) + letter_spacing;
         }
         return w > 0.0f ? w : 0.0f;
     }
-    float adv = FONT_ADV(font_size) + letter_spacing;
-    float w = 0;
-    for (const unsigned char *p = (const unsigned char *)text; *p; p++)
-        w += adv;
-    return w - FONT_PX(font_size);
+
+    /* 核心排版修复：即使 TTF 字体未就绪（例如首帧 Layout 时），也必须按照 UTF-8 字符解码测距。
+       绝不能用单字节累加，否则 3字节的 CJK 字符会导致按钮等容器被撑大 3 倍，引发严重的右侧空隙与向左偏移！ */
+    while (*p)
+    {
+        unsigned int cp = utf8_next(&p, &len);
+        if (!len)
+            break;
+        /* 根据 Unicode 区间智能分配骨架宽度：CJK 字符给 1.0em，英文字符给 0.6em，保证骨架屏和最终渲染严丝合缝 */
+        w += (cp >= 0x2E80 ? font_size : FONT_ADV(font_size)) + letter_spacing;
+    }
+    return w > 0.0f ? w - FONT_PX(font_size) : 0.0f;
 }
 
 int mini_renderer_load_fallback_font(MiniRenderer *r, const char *path)
@@ -4277,6 +4286,11 @@ void mini_draw_text_styled(MiniRenderer *r, float x, float y, const char *text,
     if (!r || !text || !*text || font_size <= 0)
         return;
     font_init();
+
+    /* 核心防抖修复：提取并强制取整基础坐标，彻底消除亚像素偏移带来的基线塌陷与抖动 */
+    float fx = floorf(x + 0.5f);
+    float fy = floorf(y + 0.5f);
+
     if (r->ttf_loaded && r->font_ctx)
     {
         float penx = 0.0f;
@@ -4285,7 +4299,7 @@ void mini_draw_text_styled(MiniRenderer *r, float x, float y, const char *text,
         float fs = tt_bucket_to_size(bucket);
         float scale = stbtt_ScaleForPixelHeight(info, fs);
         float scaled_ascent = (float)r->font_ascent * scale;
-        float baseline = floorf(y + (scaled_ascent > 0.0f ? scaled_ascent : fs * 0.75f) + 0.5f);
+        float baseline = floorf(fy + (scaled_ascent > 0.0f ? scaled_ascent : fs * 0.75f) + 0.5f);
         const char *p = text;
         int blen = 0;
         uint16_t fid = (uint16_t)(1 | (font_style ? 0x100 : 0));
@@ -4294,11 +4308,8 @@ void mini_draw_text_styled(MiniRenderer *r, float x, float y, const char *text,
             unsigned int cp = utf8_next(&p, &blen);
             if (!blen)
                 break;
-            if (cp == '\n' || cp == '\r')
+            if (cp == '\n' || cp == '\r' || cp == 0xFE0F)
                 continue;
-
-            if (cp == 0xFE0F)
-                continue; // 变体选择器剔除
 
             TtGlyph *g = tt_get_glyph(r, cp, fs);
             if (!g)
@@ -4310,7 +4321,7 @@ void mini_draw_text_styled(MiniRenderer *r, float x, float y, const char *text,
             {
                 MiniGlyphQuad q;
                 q.dx = penx + (float)g->xoff;
-                q.dy = baseline + (float)g->yoff - y;
+                q.dy = baseline + (float)g->yoff - fy;
                 q.gw = (float)g->gw;
                 q.gh = (float)g->gh;
                 float aw = (float)r->atlas_w, ah = (float)r->atlas_h;
@@ -4318,7 +4329,7 @@ void mini_draw_text_styled(MiniRenderer *r, float x, float y, const char *text,
                 q.v0 = (float)g->atlas_y / ah;
                 q.u1 = (float)(g->atlas_x + g->gw) / aw;
                 q.v1 = (float)(g->atlas_y + g->gh) / ah;
-                mini_draw_glyph_run(r, floorf(x + 0.5f), floorf(y + 0.5f), &q, 1, cr, cg, cb, ca, fid);
+                mini_draw_glyph_run(r, fx, fy, &q, 1, cr, cg, cb, ca, fid);
             }
             penx += g->advance + ls;
         }
@@ -4346,8 +4357,8 @@ void mini_draw_text_styled(MiniRenderer *r, float x, float y, const char *text,
     MiniCmd c;
     memset(&c, 0, sizeof c);
     c.type = MINI_CMD_TEXT;
-    c.x = floorf(x + 0.5f);
-    c.y = floorf(y + 0.5f);
+    c.x = fx;
+    c.y = fy;
     c.w = font_size;
     c.r = cr;
     c.g = cg;
@@ -4390,15 +4401,14 @@ static void draw_text_wrapped(MiniRenderer *r, const char *text,
     {
         if (*p == '\n' || *p == '\r')
         {
-            if (*p == '\r' && p[1] == '\n')
-                p++;
+            if (*p == '\r' && p[1] == '\n') p++;
             p++;
             line_buf[line_len] = '\0';
             float draw_x = x;
-            if (align == 1)
-                draw_x = floorf(x + (max_w - line_w) * 0.5f + 0.5f);
-            else if (align == 2)
-                draw_x = floorf(x + (max_w - line_w) + 0.5f);
+            if (align == 1) draw_x = x + (max_w - line_w) * 0.5f;
+            else if (align == 2) draw_x = x + (max_w - line_w);
+            draw_x = floorf(draw_x + 0.5f);
+
             if (line_len > 0)
                 mini_draw_text(r, draw_x, floorf(y + pen_y + 0.5f), line_buf, fs, cr, cg, cb, ca);
             pen_y += lh;
@@ -4409,31 +4419,23 @@ static void draw_text_wrapped(MiniRenderer *r, const char *text,
 
         const char *token_start = p;
         int token_bytes = 0;
-
         const char *peek_p = p;
         int cp_len = 0;
         unsigned int cp = utf8_next(&peek_p, &cp_len);
 
-        if (cp > 0x7F)
-        {
-            token_bytes = cp_len;
-            p = peek_p;
-        }
+        if (cp > 0x7F) { token_bytes = cp_len; p = peek_p; }
         else if (isspace((unsigned char)*p))
         {
-            while (*p && isspace((unsigned char)*p) && *p != '\n' && *p != '\r')
-                p++;
+            while (*p && isspace((unsigned char)*p) && *p != '\n' && *p != '\r') p++;
             token_bytes = (int)(p - token_start);
         }
         else
         {
-            while (*p && (unsigned char)*p <= 0x7F && !isspace((unsigned char)*p) && *p != '\n' && *p != '\r')
-                p++;
+            while (*p && (unsigned char)*p <= 0x7F && !isspace((unsigned char)*p) && *p != '\n' && *p != '\r') p++;
             token_bytes = (int)(p - token_start);
         }
 
-        if (token_bytes <= 0)
-            break;
+        if (token_bytes <= 0) break;
 
         char token_str[512];
         int t_len = token_bytes < (int)sizeof(token_str) - 1 ? token_bytes : (int)sizeof(token_str) - 1;
@@ -4446,18 +4448,15 @@ static void draw_text_wrapped(MiniRenderer *r, const char *text,
         {
             line_buf[line_len] = '\0';
             float draw_x = x;
-            if (align == 1)
-                draw_x = x + (max_w - line_w) * 0.5f;
-            else if (align == 2)
-                draw_x = x + (max_w - line_w);
-            mini_draw_text(r, draw_x, y + pen_y, line_buf, fs, cr, cg, cb, ca);
+            if (align == 1) draw_x = x + (max_w - line_w) * 0.5f;
+            else if (align == 2) draw_x = x + (max_w - line_w);
+            draw_x = floorf(draw_x + 0.5f);
 
+            mini_draw_text(r, draw_x, floorf(y + pen_y + 0.5f), line_buf, fs, cr, cg, cb, ca);
             pen_y += lh;
             line_len = 0;
             line_w = 0.0f;
-
-            if (token_str[0] == ' ')
-                continue;
+            if (token_str[0] == ' ') continue;
         }
 
         if (tok_w > max_w && line_len == 0)
@@ -4468,8 +4467,7 @@ static void draw_text_wrapped(MiniRenderer *r, const char *text,
             {
                 const char *cp_start = tp;
                 unsigned int c = utf8_next(&tp, &clen);
-                if (!clen)
-                    break;
+                if (!clen) break;
                 char char_buf[8];
                 int cbytes = (int)(tp - cp_start);
                 memcpy(char_buf, cp_start, cbytes);
@@ -4480,11 +4478,11 @@ static void draw_text_wrapped(MiniRenderer *r, const char *text,
                 {
                     line_buf[line_len] = '\0';
                     float draw_x = x;
-                    if (align == 1)
-                        draw_x = x + (max_w - line_w) * 0.5f;
-                    else if (align == 2)
-                        draw_x = x + (max_w - line_w);
-                    mini_draw_text(r, draw_x, y + pen_y, line_buf, fs, cr, cg, cb, ca);
+                    if (align == 1) draw_x = x + (max_w - line_w) * 0.5f;
+                    else if (align == 2) draw_x = x + (max_w - line_w);
+                    draw_x = floorf(draw_x + 0.5f);
+
+                    mini_draw_text(r, draw_x, floorf(y + pen_y + 0.5f), line_buf, fs, cr, cg, cb, ca);
                     pen_y += lh;
                     line_len = 0;
                     line_w = 0.0f;
@@ -4512,11 +4510,11 @@ static void draw_text_wrapped(MiniRenderer *r, const char *text,
     {
         line_buf[line_len] = '\0';
         float draw_x = x;
-        if (align == 1)
-            draw_x = x + (max_w - line_w) * 0.5f;
-        else if (align == 2)
-            draw_x = x + (max_w - line_w);
-        mini_draw_text(r, draw_x, y + pen_y, line_buf, fs, cr, cg, cb, ca);
+        if (align == 1) draw_x = x + (max_w - line_w) * 0.5f;
+        else if (align == 2) draw_x = x + (max_w - line_w);
+        draw_x = floorf(draw_x + 0.5f);
+
+        mini_draw_text(r, draw_x, floorf(y + pen_y + 0.5f), line_buf, fs, cr, cg, cb, ca);
     }
 }
 
