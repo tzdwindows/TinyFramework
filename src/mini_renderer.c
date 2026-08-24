@@ -2727,127 +2727,122 @@ static void mini_exec_cmd(MiniRenderer *r, const MiniCmd *c)
     }
     case 20: /* BACKDROP_FILTER (真·浏览器级高斯弥散 + 磨砂玻璃通透滤镜) */
     {
-        float blur = c->u0, invert = c->v0;
-        if (blur <= 0.0f && invert <= 0.0f)
-            break;
+            float blur = c->u0, invert = c->v0;
+            if (blur <= 0.0f && invert <= 0.0f)
+                break;
 
-        float r_tl = c->u1, r_tr = c->v1, r_br = c->r, r_bl = c->g;
-        float rads[4] = {r_tl, r_tr, r_br, r_bl};
-        int has_rounded = (r_tl > 0 || r_tr > 0 || r_br > 0 || r_bl > 0);
+            float r_tl = c->u1, r_tr = c->v1, r_br = c->r, r_bl = c->g;
+            float rads[4] = {r_tl, r_tr, r_br, r_bl};
+            int has_rounded = (r_tl > 0 || r_tr > 0 || r_br > 0 || r_bl > 0);
 
-        if (blur > 0.0f)
-        {
-            GLfloat m[16];
-            glGetFloatv(GL_MODELVIEW_MATRIX, m);
-
-            float px[4] = {c->x, c->x + c->w, c->x + c->w, c->x};
-            float py[4] = {c->y, c->y, c->y + c->h, c->y + c->h};
-            float min_x = 1e9f, max_x = -1e9f, min_y = 1e9f, max_y = -1e9f;
-            for (int i = 0; i < 4; i++)
+            if (blur > 0.0f)
             {
-                float sx = px[i] * m[0] + py[i] * m[4] + m[12];
-                float sy = px[i] * m[1] + py[i] * m[5] + m[13];
-                if (sx < min_x)
-                    min_x = sx;
-                if (sx > max_x)
-                    max_x = sx;
-                if (sy < min_y)
-                    min_y = sy;
-                if (sy > max_y)
-                    max_y = sy;
-            }
+                GLfloat m[16];
+                glGetFloatv(GL_MODELVIEW_MATRIX, m);
 
-            if (max_x - min_x > 0.001f && max_y - min_y > 0.001f)
-            {
-                /* 外扩 1.8 倍模糊半径抓取屏幕，让光晕自然弥散扩散进整个盒子 */
-                float pad = ceilf(blur * 1.8f);
-                if (pad > 64.0f)
-                    pad = 64.0f;
-
-                int vx = (int)floorf(min_x - pad);
-                int vy = (int)floorf((float)r->vbuf.height - (max_y + pad));
-                int ceil_x = (int)ceilf(max_x + pad);
-                int ceil_y = (int)ceilf((float)r->vbuf.height - (min_y - pad));
-
-                int vw = ceil_x - vx;
-                int vh = ceil_y - vy;
-
-                if (vx < 0)
+                float px[4] = {c->x, c->x + c->w, c->x + c->w, c->x};
+                float py[4] = {c->y, c->y, c->y + c->h, c->y + c->h};
+                float min_x = 1e9f, max_x = -1e9f, min_y = 1e9f, max_y = -1e9f;
+                for (int i = 0; i < 4; i++)
                 {
-                    vw += vx;
-                    vx = 0;
+                    float sx = px[i] * m[0] + py[i] * m[4] + m[12];
+                    float sy = px[i] * m[1] + py[i] * m[5] + m[13];
+                    if (sx < min_x) min_x = sx;
+                    if (sx > max_x) max_x = sx;
+                    if (sy < min_y) min_y = sy;
+                    if (sy > max_y) max_y = sy;
                 }
-                if (vy < 0)
+
+                if (max_x - min_x > 0.001f && max_y - min_y > 0.001f)
                 {
-                    vh += vy;
-                    vy = 0;
-                }
-                if (vx + vw > r->vbuf.width)
-                    vw = r->vbuf.width - vx;
-                if (vy + vh > r->vbuf.height)
-                    vh = r->vbuf.height - vy;
+                    /* 外扩 1.8 倍模糊半径抓取屏幕，让光晕自然弥散扩散进整个盒子 */
+                    float pad = ceilf(blur * 1.8f);
+                    if (pad > 64.0f) pad = 64.0f;
 
-                if (vw > 0 && vh > 0)
-                {
-                    blur_pool_ensure(vw, vh);
+                    int vx = (int)floorf(min_x - pad);
+                    int vy = (int)floorf((float)r->vbuf.height - (max_y + pad));
+                    int ceil_x = (int)ceilf(max_x + pad);
+                    int ceil_y = (int)ceilf((float)r->vbuf.height - (min_y - pad));
 
-                    /* 抓取屏幕图像 */
-                    glBindTexture(GL_TEXTURE_2D, g_blur_pool.src_tex);
-                    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, vx, vy, vw, vh);
-                    glBindTexture(GL_TEXTURE_2D, 0);
+                    int vw = ceil_x - vx;
+                    int vh = ceil_y - vy;
 
-                    GLint saved_viewport[4];
-                    glGetIntegerv(GL_VIEWPORT, saved_viewport);
+                    if (vx < 0) { vw += vx; vx = 0; }
+                    if (vy < 0) { vh += vy; vy = 0; }
+                    if (vx + vw > r->vbuf.width) vw = r->vbuf.width - vx;
+                    if (vy + vh > r->vbuf.height) vh = r->vbuf.height - vy;
 
-                    /* 双轮多级高斯弥散 */
-                    GLuint blurred_tex = run_fast_gaussian_blur(g_blur_pool.src_tex, vw, vh, blur);
-
-                    glViewport(saved_viewport[0], saved_viewport[1], saved_viewport[2], saved_viewport[3]);
-
-                    glEnable(GL_TEXTURE_2D);
-                    glBindTexture(GL_TEXTURE_2D, blurred_tex);
-                    glEnable(GL_BLEND);
-                    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
-                    /* 基础色调乘法系数：invert(0.2) 对应乘以 0.6，hue-rotate 对应乘以 0.45 */
-                    if (fabsf(invert - 0.5f) < 0.01f)
-                        glColor4f(0.40f, 0.65f, 1.0f, 1.0f);
-                    else if (invert > 0.0f)
-                        glColor4f(0.60f, 0.60f, 0.60f, 1.0f);
-                    else
-                        glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
-
-                    /* 贴回完全化开的弥散模糊纹理 */
-                    if (has_rounded)
-                        draw_rounded_corners_poly_tex_outset(c->x, c->y, c->w, c->h, rads, (float)vx, (float)vy, (float)vw, (float)vh, (float)r->vbuf.height, m);
-                    else
+                    if (vw > 0 && vh > 0)
                     {
-                        glBegin(GL_QUADS);
-#define EMIT_BACKDROP_UV(px_val, py_val)                                  \
-    do                                                                    \
-    {                                                                     \
-        float _sx = (px_val) * m[0] + (py_val) * m[4] + m[12];            \
-        float _sy = (px_val) * m[1] + (py_val) * m[5] + m[13];            \
-        float _u = (_sx - (float)vx) / (float)g_blur_pool.max_w;          \
-        float _v = ((float)r->vbuf.height - _sy - (float)vy) / (float)g_blur_pool.max_h; \
-        glTexCoord2f(_u, _v);                                             \
-        glVertex2f((px_val), (py_val));                                   \
-    } while (0)
+                        blur_pool_ensure(vw, vh);
 
-                        EMIT_BACKDROP_UV(c->x, c->y);
-                        EMIT_BACKDROP_UV(c->x + c->w, c->y);
-                        EMIT_BACKDROP_UV(c->x + c->w, c->y + c->h);
-                        EMIT_BACKDROP_UV(c->x, c->y + c->h);
-#undef EMIT_BACKDROP_UV
-                        glEnd();
+                        /* 抓取屏幕图像 */
+                        glBindTexture(GL_TEXTURE_2D, g_blur_pool.src_tex);
+                        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, vx, vy, vw, vh);
+                        glBindTexture(GL_TEXTURE_2D, 0);
+
+                        GLint saved_viewport[4];
+                        glGetIntegerv(GL_VIEWPORT, saved_viewport);
+
+                        /* 🔥核心修复：屏蔽父级容器的 Scissor 和 Stencil 裁剪，防止 FBO 渲染和 Clear 被完全丢弃！🔥 */
+                        GLboolean scissor_was_on = glIsEnabled(GL_SCISSOR_TEST);
+                        GLboolean stencil_was_on = glIsEnabled(GL_STENCIL_TEST);
+                        if (scissor_was_on) glDisable(GL_SCISSOR_TEST);
+                        if (stencil_was_on) glDisable(GL_STENCIL_TEST);
+
+                        /* 双轮多级高斯弥散 */
+                        GLuint blurred_tex = run_fast_gaussian_blur(g_blur_pool.src_tex, vw, vh, blur);
+
+                        /* 恢复裁剪状态 */
+                        if (scissor_was_on) glEnable(GL_SCISSOR_TEST);
+                        if (stencil_was_on) glEnable(GL_STENCIL_TEST);
+
+                        glViewport(saved_viewport[0], saved_viewport[1], saved_viewport[2], saved_viewport[3]);
+
+                        glEnable(GL_TEXTURE_2D);
+                        glBindTexture(GL_TEXTURE_2D, blurred_tex);
+                        glEnable(GL_BLEND);
+                        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+                        /* 基础色调乘法系数：invert(0.2) 对应乘以 0.6，hue-rotate 对应乘以 0.45 */
+                        if (fabsf(invert - 0.5f) < 0.01f)
+                            glColor4f(0.40f, 0.65f, 1.0f, 1.0f);
+                        else if (invert > 0.0f)
+                            glColor4f(0.60f, 0.60f, 0.60f, 1.0f);
+                        else
+                            glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+
+                        /* 贴回完全化开的弥散模糊纹理 */
+                        if (has_rounded)
+                            draw_rounded_corners_poly_tex_outset(c->x, c->y, c->w, c->h, rads, (float)vx, (float)vy, (float)vw, (float)vh, (float)r->vbuf.height, m);
+                        else
+                        {
+                            glBegin(GL_QUADS);
+    #define EMIT_BACKDROP_UV(px_val, py_val)                                  \
+        do                                                                    \
+        {                                                                     \
+            float _sx = (px_val) * m[0] + (py_val) * m[4] + m[12];            \
+            float _sy = (px_val) * m[1] + (py_val) * m[5] + m[13];            \
+            float _u = (_sx - (float)vx) / (float)g_blur_pool.max_w;          \
+            float _v = ((float)r->vbuf.height - _sy - (float)vy) / (float)g_blur_pool.max_h; \
+            glTexCoord2f(_u, _v);                                             \
+            glVertex2f((px_val), (py_val));                                   \
+        } while (0)
+
+                            EMIT_BACKDROP_UV(c->x, c->y);
+                            EMIT_BACKDROP_UV(c->x + c->w, c->y);
+                            EMIT_BACKDROP_UV(c->x + c->w, c->y + c->h);
+                            EMIT_BACKDROP_UV(c->x, c->y + c->h);
+    #undef EMIT_BACKDROP_UV
+                            glEnd();
+                        }
+                        glBindTexture(GL_TEXTURE_2D, 0);
+                        glDisable(GL_TEXTURE_2D);
                     }
-                    glBindTexture(GL_TEXTURE_2D, 0);
-                    glDisable(GL_TEXTURE_2D);
                 }
             }
+            break;
         }
-        break;
-    }
     case 21: /* DIFFERENCE BLEND MODE (硬件模拟 Difference 混合) */
     {
         glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_FALSE); /* 必须保护目的地 Alpha 不被 Difference 破坏 */
@@ -3609,7 +3604,8 @@ static void blur_pool_ensure(int w, int h)
         g_blur_pool.max_w = need_w;
         g_blur_pool.max_h = need_h;
         glBindTexture(GL_TEXTURE_2D, g_blur_pool.src_tex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, need_w, need_h, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+        /* 核心修复：强制使用 GL_RGBA 确保所有显卡的 FBO Color Attachment 完整性 */
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, need_w, need_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -3632,7 +3628,7 @@ static void blur_pool_ensure(int w, int h)
                 glGenTextures(1, &g_blur_pool.tex[i]);
 
             glBindTexture(GL_TEXTURE_2D, g_blur_pool.tex[i]);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, dw, dh, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, dw, dh, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -3654,7 +3650,8 @@ static void blur_pool_ensure(int w, int h)
             glGenTextures(1, &g_blur_pool.tex[2]);
 
         glBindTexture(GL_TEXTURE_2D, g_blur_pool.tex[2]);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, need_w, need_h, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, need_w, need_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+        /* 找回被遗漏的参数！这些是 NPOT (非2的幂) 纹理正常工作的核心命脉 */
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
