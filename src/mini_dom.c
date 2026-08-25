@@ -5542,8 +5542,11 @@ static void layout_node(struct MiniNode *n, float x, float y,
 
         s->h = (s->len_h.unit == 1)
                    ? resolve_len(s->len_h, avail_h, own_font, g_lctx.root_font, g_lctx.vw, g_lctx.vh)
-                   : resolve_field(n, CF_H, s->len_h, avail_w, own_font,
-                                   g_lctx.root_font, g_lctx.vw, g_lctx.vh);
+                   : (s->len_h.v > 0.0f || s->len_h.unit != 0)
+                       ? resolve_field(n, CF_H, s->len_h, avail_w, own_font, g_lctx.root_font, g_lctx.vw, g_lctx.vh)
+                       : (avail_h > 0.0f && (s->display == MINI_DISPLAY_FLEX || s->display == MINI_DISPLAY_BLOCK) && s->flex_grow > 0.0f)
+                           ? avail_h
+                           : 0.0f;
 
         for (int i = 0; i < 4; i++)
         {
@@ -6160,11 +6163,16 @@ static void layout_node(struct MiniNode *n, float x, float y,
             for (int ki = 0; ki < kcount; ki++)
             {
                 struct MiniNode *c = flex_kids[ki];
-                float child_w_constraint = row ? main_avail : cross;
+                float child_w_constraint = row ? (c->style.flex_grow > 0.0f ? ((main_avail - (kcount > 1 ? (kcount - 1) * gap_px : 0.0f)) / (float)kcount) : main_avail) : cross;
                 float child_h_constraint = row ? cross : main_avail;
 
                 layout_node(c, s->abs_x + s->padding[3], s->abs_y + s->padding[0],
                             child_w_constraint, child_h_constraint);
+                if (row && c->style.flex_grow > 0.0f)
+                {
+                    c->style.w = child_w_constraint - c->style.margin[1] - c->style.margin[3];
+                    if (c->style.w < 0.0f) c->style.w = 0.0f;
+                }
 
                 float step = row ? c->style.w + c->style.margin[1] + c->style.margin[3]
                                  : c->style.h + c->style.margin[0] + c->style.margin[2];
@@ -6356,12 +6364,19 @@ static void layout_node(struct MiniNode *n, float x, float y,
 
                     float nx = final_x;
                     float ny = final_y;
-                    float dx = nx - c->style.abs_x;
-                    float dy = ny - c->style.abs_y;
-                    c->style.abs_x = nx;
-                    c->style.abs_y = ny;
-                    if (dx != 0.0f || dy != 0.0f)
-                        shift_subtree(c, dx, dy);
+                    if (c->first_child)
+                    {
+                        layout_node(c, nx, ny, c->style.w, c->style.h);
+                    }
+                    else
+                    {
+                        float dx = nx - c->style.abs_x;
+                        float dy = ny - c->style.abs_y;
+                        c->style.abs_x = nx;
+                        c->style.abs_y = ny;
+                        if (dx != 0.0f || dy != 0.0f)
+                            shift_subtree(c, dx, dy);
+                    }
 
                     pos -= (row ? c->style.w + c->style.margin[1] + c->style.margin[3]
                                 : c->style.h + c->style.margin[0] + c->style.margin[2]) +
@@ -6422,12 +6437,19 @@ static void layout_node(struct MiniNode *n, float x, float y,
 
                     float nx = final_x + c->style.margin[3];
                     float ny = final_y + c->style.margin[0];
-                    float dx = nx - c->style.abs_x;
-                    float dy = ny - c->style.abs_y;
-                    c->style.abs_x = nx;
-                    c->style.abs_y = ny;
-                    if (dx != 0.0f || dy != 0.0f)
-                        shift_subtree(c, dx, dy);
+                    if (c->first_child)
+                    {
+                        layout_node(c, nx, ny, c->style.w, c->style.h);
+                    }
+                    else
+                    {
+                        float dx = nx - c->style.abs_x;
+                        float dy = ny - c->style.abs_y;
+                        c->style.abs_x = nx;
+                        c->style.abs_y = ny;
+                        if (dx != 0.0f || dy != 0.0f)
+                            shift_subtree(c, dx, dy);
+                    }
 
                     pos += (row ? c->style.w + c->style.margin[1] + c->style.margin[3]
                                 : c->style.h + c->style.margin[0] + c->style.margin[2]) +

@@ -90,12 +90,14 @@
     /* Sidebar */
     .app-sidebar {
       width: 220px;
+      height: 100%;
       background-color: var(--bg-secondary);
       border-right: 1px solid var(--border-color);
       display: flex;
       flex-direction: column;
       justify-content: space-between;
       padding: 15px 10px;
+      flex-shrink: 0;
     }
 
     .sidebar-nav {
@@ -106,7 +108,7 @@
 
     .nav-item {
       background: transparent;
-      border: none;
+      border: 1px solid transparent;
       color: var(--text-secondary);
       padding: 10px 14px;
       border-radius: 8px;
@@ -140,16 +142,19 @@
     /* Content Area */
     .app-content {
       flex: 1;
+      height: 100%;
       padding: 24px;
       overflow-y: auto;
     }
 
     .tab-panel {
       display: none;
+      width: 100%;
     }
 
     .tab-panel.active {
       display: block;
+      width: 100%;
     }
 
     .hero-card {
@@ -158,6 +163,7 @@
       border-radius: 12px;
       margin-bottom: 24px;
       box-shadow: 0 10px 25px -5px rgba(59, 130, 246, 0.3);
+      width: 100%;
     }
 
     .hero-card h2 {
@@ -174,7 +180,9 @@
     .grid-cards {
       display: flex;
       flex-direction: row;
+      justify-content: space-between;
       gap: 16px;
+      width: 100%;
     }
 
     .card {
@@ -182,7 +190,10 @@
       border: 1px solid var(--border-color);
       padding: 20px;
       border-radius: 12px;
-      flex: 1;
+      width: 320px;
+      flex: 1 1 0px;
+      min-width: 0;
+      box-sizing: border-box;
     }
 
     .stat-card h3 {

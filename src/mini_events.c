@@ -2149,18 +2149,34 @@ void mini_events_handle_mouse_button(MiniEventState *st, int button, int action,
             if (st->press_target && st->press_target != rel_node)
                 mini_node_set_interaction_state(st->press_target, -1, 0, -1);
 
-            /* click: press + release on the same target */
-            if (t && t == st->press_target)
+            /* click: press + release on the same target or ancestor/descendant */
+            struct MiniNode *click_tgt = NULL;
+            if (t && st->press_target)
             {
-                ev = make_mouse("click", t, x, y, mods);
+                if (t == st->press_target) click_tgt = t;
+                else
+                {
+                    for (struct MiniNode *p = t; p; p = p->parent)
+                        if (p == st->press_target) { click_tgt = st->press_target; break; }
+                    if (!click_tgt)
+                        for (struct MiniNode *p = st->press_target; p; p = p->parent)
+                            if (p == t) { click_tgt = t; break; }
+                }
+            }
+            else if (t) click_tgt = t;
+            else if (st->press_target) click_tgt = st->press_target;
+
+            if (click_tgt)
+            {
+                ev = make_mouse("click", click_tgt, x, y, mods);
                 ev.button = w3c;
                 ev.buttons = st->buttons_mask;
                 ev.bubbles = 1;
-                mini_event_dispatch(st, &ev, t);
+                mini_event_dispatch(st, &ev, click_tgt);
 
                 if (!ev.preventDefault && w3c == 0)
                 {
-                    for (struct MiniNode *anc = t; anc; anc = anc->parent)
+                    for (struct MiniNode *anc = click_tgt; anc; anc = anc->parent)
                     {
                         if (anc->tag && !strcmp(anc->tag, "a"))
                         {
