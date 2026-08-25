@@ -75,6 +75,8 @@ void        mini_bridge_storage_set(MiniBridge *b, int which, const char *key, c
 void        mini_bridge_storage_remove(MiniBridge *b, int which, const char *key);
 void        mini_bridge_storage_clear(MiniBridge *b, int which);
 struct MiniNode *mini_bridge_node_from_js(MiniBridge *b, JSValueConst val);
+int         mini_bridge_is_pointer_locked(MiniBridge *b);
+void        mini_bridge_unlock_pointer(MiniBridge *b);
 
 #ifdef __cplusplus
 }

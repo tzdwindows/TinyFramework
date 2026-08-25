@@ -274,6 +274,7 @@ static const char *DEVTOOLS_JS =
     "  }\n"
     "  \n"
     "  window.addEventListener('contextmenu', function(e){\n"
+    "    if(document.pointerLockElement) return;\n"
     "    if(e && e.preventDefault) e.preventDefault();\n"
     "    initContextMenu();\n"
     "    CM.__targetNode = e.target;\n"

@@ -15,3 +15,5 @@
 !include/
 !libs/
 !src/
+!templates/
+templates/**/dist/

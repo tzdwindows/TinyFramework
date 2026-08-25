@@ -1,0 +1,13 @@
+{
+  "name": "tiny-desktop-app",
+  "version": "1.0.0",
+  "description": "High-Performance Desktop App built with JavaScript and TinyFramework Browser Engine",
+  "main": "src/index.html",
+  "scripts": {
+    "dev": "python scripts/dev.py",
+    "build": "python scripts/package.py",
+    "package": "python scripts/package.py --encrypt --icon assets/icon.png"
+  },
+  "author": "",
+  "license": "MIT"
+}

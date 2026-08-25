@@ -224,6 +224,13 @@ static void glfw_key_cb(GLFWwindow *win, int key, int scancode, int action,
         printf("open devtools\n");
         mini_devtools_toggle(app->bridge);
     }
+    if (app && app->bridge && action == GLFW_PRESS && key == GLFW_KEY_ESCAPE)
+    {
+        if (mini_bridge_is_pointer_locked(app->bridge))
+        {
+            mini_bridge_unlock_pointer(app->bridge);
+        }
+    }
     if (app && app->diag && (action == GLFW_PRESS || action == GLFW_REPEAT))
         mini_diag_key(app->diag, key, mods);
     if (app && app->events &&
@@ -660,28 +667,14 @@ MiniResult mini_app_create(const MiniWindowConfig *cfg, MiniApp **out)
             }
         }
         if (!pri_loaded)
-            fprintf(stderr, "[app] Primary font not found; using 5x7 bitmap fallback\n");
-
-        const char *fb_names[] = {
-            "seguiemj.ttf", "simhei.ttf", "segoeui.ttf", "simsun.ttc", "arialuni.ttf"
-        };
+        /* Load emoji fallback font for full Unicode/Emoji symbol support */
         if (win_dir[0])
         {
             char pbuf[576];
-            for (size_t i = 0; i < sizeof(fb_names) / sizeof(fb_names[0]); i++)
+            snprintf(pbuf, sizeof(pbuf), "%s/Fonts/seguiemj.ttf", win_dir);
+            if (mini_renderer_load_fallback_font(app->r, pbuf) == 0)
             {
-                snprintf(pbuf, sizeof(pbuf), "%s/Fonts/%s", win_dir, fb_names[i]);
-                if (mini_renderer_load_fallback_font(app->r, pbuf) == 0)
-                {
-                    fprintf(stderr, "[app] Fallback font loaded: %s\n", pbuf);
-                }
-            }
-        }
-        for (size_t i = 0; i < sizeof(local_cands) / sizeof(local_cands[0]); i++)
-        {
-            if (mini_renderer_load_fallback_font(app->r, local_cands[i]) == 0)
-            {
-                fprintf(stderr, "[app] Fallback font loaded (local): %s\n", local_cands[i]);
+                fprintf(stderr, "[app] Emoji fallback font loaded: %s\n", pbuf);
             }
         }
     }
@@ -1198,12 +1191,101 @@ void mini_app_destroy(MiniApp *app)
 
 /* ---- program entry: create window + engine, load a JS file, run ---- */
 #include <stdlib.h>
+#include "stb_image.h"
+
+static void load_app_config(MiniWindowConfig *cfg, char *entry_out, size_t entry_cap, char *icon_out, size_t icon_cap)
+{
+    const char *config_paths[] = { "app.config.json", "config.json", "package.json" };
+    for (size_t i = 0; i < sizeof(config_paths)/sizeof(config_paths[0]); i++)
+    {
+        size_t sz = 0;
+        char *content = read_file(config_paths[i], &sz);
+        if (content)
+        {
+            char *p = strstr(content, "\"title\":");
+            if (p)
+            {
+                p += 8;
+                while (*p && (*p == ' ' || *p == '\"' || *p == ':')) p++;
+                char *end = strchr(p, '\"');
+                if (end)
+                {
+                    static char title_buf[256];
+                    size_t len = (size_t)(end - p);
+                    if (len >= sizeof(title_buf)) len = sizeof(title_buf) - 1;
+                    memcpy(title_buf, p, len);
+                    title_buf[len] = 0;
+                    cfg->title = title_buf;
+                }
+            }
+            p = strstr(content, "\"width\":");
+            if (p) { p += 8; while(*p && !isdigit((unsigned char)*p)) p++; if(isdigit((unsigned char)*p)) cfg->width = atoi(p); }
+            p = strstr(content, "\"height\":");
+            if (p) { p += 9; while(*p && !isdigit((unsigned char)*p)) p++; if(isdigit((unsigned char)*p)) cfg->height = atoi(p); }
+            p = strstr(content, "\"entry\":");
+            if (p && entry_out)
+            {
+                p += 8;
+                while (*p && (*p == ' ' || *p == '\"' || *p == ':')) p++;
+                char *end = strchr(p, '\"');
+                if (end)
+                {
+                    size_t len = (size_t)(end - p);
+                    if (len >= entry_cap) len = entry_cap - 1;
+                    memcpy(entry_out, p, len);
+                    entry_out[len] = 0;
+                }
+            }
+            p = strstr(content, "\"icon\":");
+            if (p && icon_out)
+            {
+                p += 7;
+                while (*p && (*p == ' ' || *p == '\"' || *p == ':')) p++;
+                char *end = strchr(p, '\"');
+                if (end)
+                {
+                    size_t len = (size_t)(end - p);
+                    if (len >= icon_cap) len = icon_cap - 1;
+                    memcpy(icon_out, p, len);
+                    icon_out[len] = 0;
+                }
+            }
+            free(content);
+            break;
+        }
+    }
+}
+
+static void apply_app_icon(MiniApp *app, const char *custom_icon)
+{
+    if (!app || !app->r || !app->r->gpu.window_handle) return;
+    const char *candidates[6];
+    int n_cands = 0;
+    if (custom_icon && custom_icon[0]) candidates[n_cands++] = custom_icon;
+    candidates[n_cands++] = "assets/app.ico";
+    candidates[n_cands++] = "assets/icon.png";
+    candidates[n_cands++] = "app.ico";
+    candidates[n_cands++] = "icon.png";
+
+    for (int i = 0; i < n_cands; i++)
+    {
+        int iw = 0, ih = 0, ic = 0;
+        unsigned char *pix = stbi_load(candidates[i], &iw, &ih, &ic, 4);
+        if (pix && iw > 0 && ih > 0)
+        {
+            GLFWimage gimg;
+            gimg.width = iw;
+            gimg.height = ih;
+            gimg.pixels = pix;
+            glfwSetWindowIcon((GLFWwindow *)app->r->gpu.window_handle, 1, &gimg);
+            stbi_image_free(pix);
+            break;
+        }
+    }
+}
+
 int main(int argc, char **argv)
 {
-    /* Boot the structured logger + crash interceptor FIRST, before anything
-       else, so every later subsystem (and every JS console.* line) is captured
-       to the ring + file, and a hard crash leaves a dump + log trail. The
-       TINY_LOG / TINY_LOG_FILE / TINY_LOG_STDERR env vars override defaults. */
     mini_log_init();
     mini_crash_set_version("1.0.0");
     mini_crash_init("tiny_app", "build");
@@ -1220,14 +1302,19 @@ int main(int argc, char **argv)
     MiniWindowConfig_Init(&cfg);
     cfg.width = 1280;
     cfg.height = 800;
+    cfg.title = "TinyFramework";
+    cfg.vsync = 1;
+
+    char config_entry[512] = {0};
+    char config_icon[512] = {0};
+    load_app_config(&cfg, config_entry, sizeof(config_entry), config_icon, sizeof(config_icon));
+
     const char *w_env = getenv("TINY_WIDTH");
     const char *h_env = getenv("TINY_HEIGHT");
     if (w_env)
         cfg.width = atoi(w_env);
     if (h_env)
         cfg.height = atoi(h_env);
-    cfg.title = "TinyFramework";
-    cfg.vsync = 1;
 
     MiniApp *app = NULL;
     if (mini_app_create(&cfg, &app) != MINI_OK)
@@ -1236,13 +1323,27 @@ int main(int argc, char **argv)
                   mini_app_mode() ? "CUSTOM_MINI" : "NATIVE");
         return 1;
     }
+    apply_app_icon(app, config_icon);
+
     uint16_t cdp_port = 9222;
     const char *port_env = getenv("TINY_CDP_PORT");
     if (port_env && atoi(port_env) > 0)
         cdp_port = (uint16_t)atoi(port_env);
     mini_app_enable_cdp(app, cdp_port);
 
-    const char *js = (argc > 1) ? argv[1] : "test_suite.js";
+    const char *js = (argc > 1) ? argv[1] : NULL;
+    if (!js)
+    {
+        if (config_entry[0]) js = config_entry;
+        else
+        {
+            FILE *fp;
+            if ((fp = fopen("app.pak", "rb")) != NULL) { fclose(fp); js = "app.pak"; }
+            else if ((fp = fopen("src/index.html", "rb")) != NULL) { fclose(fp); js = "src/index.html"; }
+            else if ((fp = fopen("index.html", "rb")) != NULL) { fclose(fp); js = "index.html"; }
+            else js = "test_suite.js";
+        }
+    }
     if (mini_app_load(app, js) != MINI_OK)
     {
         mini_logf(MINI_LOG_ERROR, "app", "load failed: %s", js);

@@ -9642,6 +9642,20 @@ static void render_node(struct MiniNode *n, MiniRenderer *r)
         if (ta <= 0.0f)
             ta = 1.0f;
 
+        float elem_op = 1.0f;
+        struct MiniNode *op_node = n->parent;
+        while (op_node)
+        {
+            if (op_node->style.display == MINI_DISPLAY_NONE)
+                return;
+            if (op_node->style.has_opacity)
+                elem_op *= op_node->style.opacity;
+            op_node = op_node->parent;
+        }
+        ta *= elem_op;
+        if (ta <= 0.001f)
+            return;
+
         if (p && p->style.has_filter && p->style.filter_invert > 0.0f)
         {
             float inv = p->style.filter_invert;

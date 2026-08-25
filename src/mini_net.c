@@ -1416,11 +1416,9 @@ int mini_net_fetch(const char *method, const char *url,
             header_value(out->resp_headers, "ETag", etag, sizeof etag);
             header_value(out->resp_headers, "Last-Modified", lm, sizeof lm);
             header_value(out->resp_headers, "Cache-Control", cc, sizeof cc);
-            header_value(out->resp_headers, "Expires", exp, sizeof exp);
-            if (cc[0] || etag[0] || lm[0])
-                mini_httpcache_store(eff_url, out->status, out->mime,
-                                     out->resp_body ? out->resp_body : "", out->resp_body_len,
-                                     etag, lm, cc, exp);
+            mini_httpcache_store(eff_url, out->status, out->mime,
+                                 out->resp_body ? out->resp_body : "", out->resp_body_len,
+                                 etag, lm, cc, exp);
         }
     }
     return rc;
@@ -1475,8 +1473,6 @@ static void pf_do(PrefetchSlot *s)
         header_value(rec.resp_headers, "ETag", etag, sizeof etag);
         header_value(rec.resp_headers, "Last-Modified", lm, sizeof lm);
         header_value(rec.resp_headers, "Cache-Control", cc, sizeof cc);
-        header_value(rec.resp_headers, "Expires", exp, sizeof exp);
-        if (cc[0] || etag[0] || lm[0])
             mini_httpcache_store(s->url, rec.status, rec.mime,
                                  rec.resp_body, rec.resp_body_len,
                                  etag, lm, cc, exp);

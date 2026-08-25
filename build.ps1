@@ -77,7 +77,8 @@ $SOURCES = @(
     "src\mini_devtools.c",
     "src\mini_webgl_ext.c",
     "src\mini_bidi.c",
-    "src\mini_shaping.c"
+    "src\mini_shaping.c",
+    "src\mini_audio.c"
 )
 
 # 5. Library Directories (-L) and Libraries (-l)
@@ -97,6 +98,7 @@ $LIBS = @(
     "-lws2_32",
     "-lbcrypt",
     "-ldbghelp",
+    "-lwinmm",
     "-lm"
 )
 

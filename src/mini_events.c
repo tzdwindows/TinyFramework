@@ -1940,6 +1940,8 @@ void mini_events_handle_mouse_button(MiniEventState *st, int button, int action,
     if (!st || !st->doc)
         return;
     struct MiniNode *t = mini_dom_hit_test_doc(st->doc, x, y);
+    if (!t && st->doc)
+        t = st->doc->body ? st->doc->body : st->doc->root;
     /* GLFW 0=left 1=right 2=middle -> W3C 0=left 2=right 1=middle */
     int w3c = (button == 0) ? 0 : (button == 1) ? 2
                                                 : 1;

@@ -1,0 +1,11 @@
+{
+  "name": "MyDesktopApp",
+  "title": "My Tiny Desktop Application",
+  "version": "1.0.0",
+  "width": 1280,
+  "height": 800,
+  "entry": "src/index.html",
+  "icon": "assets/icon.png",
+  "encrypted": false,
+  "vsync": true
+}
