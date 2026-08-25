@@ -209,7 +209,7 @@
       background: linear-gradient(135deg, #1e3a8a 0%, #3b82f6 100%);
       padding: 24px;
       border-radius: 12px;
-      margin-bottom: 24px;
+      margin-bottom: 20px;
       box-shadow: 0 10px 25px -5px rgba(59, 130, 246, 0.3);
       width: 100%;
       box-sizing: border-box;
@@ -245,11 +245,14 @@
     }
 
     .stat-card {
+      background-color: var(--bg-card);
+      border: 1px solid var(--border-color);
+      padding: 22px;
+      border-radius: 12px;
       width: 320px;
-      max-width: 320px;
       flex: 1 1 0px;
       min-width: 0;
-      margin-bottom: 0;
+      box-sizing: border-box;
     }
 
     .stat-card h3 {
@@ -378,16 +381,16 @@
       <!-- Sidebar -->
       <aside class="app-sidebar">
         <nav class="sidebar-nav">
-          <button class="nav-item active" data-tab="dashboard">
+          <button class="nav-item active" id="tab-btn-dashboard" data-tab="dashboard" onclick="switchTab('dashboard')">
             <span>📊</span> 仪表盘
           </button>
-          <button class="nav-item" data-tab="canvas">
+          <button class="nav-item" id="tab-btn-canvas" data-tab="canvas" onclick="switchTab('canvas')">
             <span>🎨</span> 图形画板
           </button>
-          <button class="nav-item" data-tab="sound">
+          <button class="nav-item" id="tab-btn-sound" data-tab="sound" onclick="switchTab('sound')">
             <span>🔊</span> 智能音效
           </button>
-          <button class="nav-item" data-tab="settings">
+          <button class="nav-item" id="tab-btn-settings" data-tab="settings" onclick="switchTab('settings')">
             <span>⚙️</span> 动态配置
           </button>
         </nav>
@@ -406,17 +409,17 @@
           </div>
 
           <div class="grid-cards">
-            <div class="card stat-card">
+            <div class="stat-card">
               <h3>⚡ 极致轻量</h3>
               <p class="stat-value">~3 MB</p>
               <p class="stat-desc">无需庞大臃肿的 Chromium / Node.js 运行时</p>
             </div>
-            <div class="card stat-card">
+            <div class="stat-card">
               <h3>🔒 源码加密</h3>
               <p class="stat-value">ChaCha20</p>
               <p class="stat-desc">一键打包编译 QuickJS 字节码并全面高强度加密</p>
             </div>
-            <div class="card stat-card">
+            <div class="stat-card">
               <h3>🎨 硬件加速</h3>
               <p class="stat-value">OpenGL / WebGL</p>
               <p class="stat-desc">支持 2D Canvas 与 Three.js 3D 沉浸式图形引擎</p>
@@ -463,9 +466,9 @@
             <div class="form-group">
               <label>动态主题切换：</label>
               <div class="btn-group">
-                <button id="btn-theme-dark" class="btn">深邃暗黑</button>
-                <button id="btn-theme-purple" class="btn">赛博霓虹</button>
-                <button id="btn-theme-sunset" class="btn">温暖晚霞</button>
+                <button id="btn-theme-dark" class="btn" onclick="applyTheme('dark')">深邃暗黑</button>
+                <button id="btn-theme-purple" class="btn" onclick="applyTheme('purple')">赛博霓虹</button>
+                <button id="btn-theme-sunset" class="btn" onclick="applyTheme('sunset')">温暖晚霞</button>
               </div>
             </div>
           </div>
@@ -474,6 +477,42 @@
     </main>
   </div>
 
+  <script>
+    // Tab switching fallback
+    window.switchTab = function(tabName) {
+      var navItems = document.querySelectorAll('.nav-item');
+      var tabPanels = document.querySelectorAll('.tab-panel');
+
+      for (var i = 0; i < navItems.length; i++) {
+        navItems[i].classList.remove('active');
+      }
+      for (var i = 0; i < tabPanels.length; i++) {
+        tabPanels[i].classList.remove('active');
+        tabPanels[i].style.display = 'none';
+      }
+
+      var activeBtn = document.getElementById('tab-btn-' + tabName);
+      if (activeBtn) activeBtn.classList.add('active');
+
+      var panel = document.getElementById('panel-' + tabName);
+      if (panel) {
+        panel.classList.add('active');
+        panel.style.display = 'block';
+      }
+    };
+
+    window.applyTheme = function(theme) {
+      document.body.className = (theme === 'dark') ? '' : ('theme-' + theme);
+      document.body.setAttribute('class', (theme === 'dark') ? '' : ('theme-' + theme));
+      if (theme === 'dark') {
+        document.body.style.backgroundColor = '#121418';
+      } else if (theme === 'purple') {
+        document.body.style.backgroundColor = '#180b29';
+      } else if (theme === 'sunset') {
+        document.body.style.backgroundColor = '#1f130f';
+      }
+    };
+  </script>
   <script src="app.js"></script>
 </body>
 </html>
