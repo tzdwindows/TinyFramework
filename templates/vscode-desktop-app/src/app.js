@@ -1,3 +1,6 @@
+// TinyFramework Desktop Application Template Entry
+console.log("[App] Desktop Application Loaded successfully!");
+
 // 1. Navigation Tab Switching with robust event delegation
 document.addEventListener('click', (e) => {
   let target = e.target;
@@ -16,19 +19,13 @@ document.addEventListener('click', (e) => {
   const navItems = document.querySelectorAll('.nav-item');
   const tabPanels = document.querySelectorAll('.tab-panel');
 
-  navItems.forEach(n => {
-    n.classList.remove('active');
-    n.style.backgroundColor = 'transparent';
-    n.style.color = 'var(--text-secondary)';
-  });
+  navItems.forEach(n => n.classList.remove('active'));
   tabPanels.forEach(p => {
     p.classList.remove('active');
     p.style.display = 'none';
   });
 
   item.classList.add('active');
-  item.style.backgroundColor = 'var(--accent-color)';
-  item.style.color = '#ffffff';
 
   const panel = document.getElementById('panel-' + tabName);
   if (panel) {
@@ -47,40 +44,32 @@ if (btnApplyTitle) {
     const val = inputAppTitle.value.trim();
     if (val) {
       document.title = val;
-      displayTitle.textContent = val;
+      if (displayTitle) displayTitle.textContent = val;
     }
   });
 }
 
 // 3. Dynamic Theme Switcher
+function applyTheme(theme) {
+  document.body.className = (theme === 'dark') ? '' : ('theme-' + theme);
+  document.body.setAttribute('class', (theme === 'dark') ? '' : ('theme-' + theme));
+
+  if (theme === 'dark') {
+    document.body.style.backgroundColor = '#121418';
+  } else if (theme === 'purple') {
+    document.body.style.backgroundColor = '#180b29';
+  } else if (theme === 'sunset') {
+    document.body.style.backgroundColor = '#1f130f';
+  }
+}
+
 const btnDark = document.getElementById('btn-theme-dark');
 const btnPurple = document.getElementById('btn-theme-purple');
 const btnSunset = document.getElementById('btn-theme-sunset');
 
-if (btnDark) {
-  btnDark.addEventListener('click', () => {
-    document.documentElement.style.setProperty('--bg-primary', '#121418');
-    document.documentElement.style.setProperty('--bg-secondary', '#1a1d24');
-    document.documentElement.style.setProperty('--bg-card', '#222630');
-    document.documentElement.style.setProperty('--accent-color', '#3b82f6');
-  });
-}
-if (btnPurple) {
-  btnPurple.addEventListener('click', () => {
-    document.documentElement.style.setProperty('--bg-primary', '#180b29');
-    document.documentElement.style.setProperty('--bg-secondary', '#24123d');
-    document.documentElement.style.setProperty('--bg-card', '#301852');
-    document.documentElement.style.setProperty('--accent-color', '#a855f7');
-  });
-}
-if (btnSunset) {
-  btnSunset.addEventListener('click', () => {
-    document.documentElement.style.setProperty('--bg-primary', '#1f130f');
-    document.documentElement.style.setProperty('--bg-secondary', '#2b1b15');
-    document.documentElement.style.setProperty('--bg-card', '#3d261e');
-    document.documentElement.style.setProperty('--accent-color', '#f97316');
-  });
-}
+if (btnDark) btnDark.addEventListener('click', () => applyTheme('dark'));
+if (btnPurple) btnPurple.addEventListener('click', () => applyTheme('purple'));
+if (btnSunset) btnSunset.addEventListener('click', () => applyTheme('sunset'));
 
 // 4. Interactive Canvas Particle Animation
 const canvas = document.getElementById('interactive-canvas');
@@ -131,8 +120,10 @@ function updateParticles() {
 if (canvas && ctx) {
   spawnParticles(20);
   updateParticles();
-  document.getElementById('btn-spawn-particles').addEventListener('click', () => spawnParticles(50));
-  document.getElementById('btn-clear-canvas').addEventListener('click', () => {
+  const btnSpawn = document.getElementById('btn-spawn-particles');
+  const btnClear = document.getElementById('btn-clear-canvas');
+  if (btnSpawn) btnSpawn.addEventListener('click', () => spawnParticles(50));
+  if (btnClear) btnClear.addEventListener('click', () => {
     particles = [];
     ctx.fillStyle = '#0f1115';
     ctx.fillRect(0, 0, canvas.width, canvas.height);

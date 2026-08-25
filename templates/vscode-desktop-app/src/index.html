@@ -23,6 +23,46 @@
       --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Microsoft YaHei", sans-serif;
     }
 
+    body.theme-purple {
+      background-color: #180b29 !important;
+    }
+    body.theme-purple .app-header {
+      background-color: #24123d !important;
+    }
+    body.theme-purple .app-sidebar {
+      background-color: #24123d !important;
+    }
+    body.theme-purple .card {
+      background-color: #301852 !important;
+    }
+    body.theme-purple .nav-item.active {
+      background-color: #a855f7 !important;
+    }
+    body.theme-purple .btn-primary {
+      background-color: #a855f7 !important;
+      border-color: #a855f7 !important;
+    }
+
+    body.theme-sunset {
+      background-color: #1f130f !important;
+    }
+    body.theme-sunset .app-header {
+      background-color: #2b1b15 !important;
+    }
+    body.theme-sunset .app-sidebar {
+      background-color: #2b1b15 !important;
+    }
+    body.theme-sunset .card {
+      background-color: #3d261e !important;
+    }
+    body.theme-sunset .nav-item.active {
+      background-color: #f97316 !important;
+    }
+    body.theme-sunset .btn-primary {
+      background-color: #f97316 !important;
+      border-color: #f97316 !important;
+    }
+
     body {
       font-family: var(--font-family);
       background-color: var(--bg-primary);
@@ -50,6 +90,7 @@
       align-items: center;
       justify-content: space-between;
       padding: 0 20px;
+      flex-shrink: 0;
     }
 
     .brand {
@@ -78,10 +119,11 @@
       border: 1px solid rgba(59, 130, 246, 0.3);
     }
 
-    /* Main */
+    /* Main Workspace */
     .app-main {
       flex: 1;
       width: 100%;
+      height: calc(100vh - 52px);
       display: flex;
       flex-direction: row;
       overflow: hidden;
@@ -96,21 +138,25 @@
       display: flex;
       flex-direction: column;
       justify-content: space-between;
-      padding: 15px 10px;
+      padding: 16px 12px;
       flex-shrink: 0;
+      box-sizing: border-box;
     }
 
     .sidebar-nav {
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      gap: 8px;
+      width: 100%;
     }
 
     .nav-item {
+      width: 100%;
+      height: 42px;
       background: transparent;
       border: 1px solid transparent;
       color: var(--text-secondary);
-      padding: 10px 14px;
+      padding: 0 14px;
       border-radius: 8px;
       text-align: left;
       font-size: 14px;
@@ -118,6 +164,7 @@
       display: flex;
       align-items: center;
       gap: 10px;
+      box-sizing: border-box;
       transition: all 0.2s;
     }
 
@@ -127,13 +174,13 @@
     }
 
     .nav-item.active {
-      background: var(--accent-color);
-      color: #fff;
+      background: var(--accent-color) !important;
+      color: #ffffff !important;
       font-weight: 500;
     }
 
     .sidebar-footer {
-      padding: 10px;
+      padding: 10px 4px 0 4px;
       border-top: 1px solid var(--border-color);
       color: var(--text-secondary);
       font-size: 12px;
@@ -145,6 +192,7 @@
       height: 100%;
       padding: 24px;
       overflow-y: auto;
+      box-sizing: border-box;
     }
 
     .tab-panel {
@@ -164,6 +212,7 @@
       margin-bottom: 24px;
       box-shadow: 0 10px 25px -5px rgba(59, 130, 246, 0.3);
       width: 100%;
+      box-sizing: border-box;
     }
 
     .hero-card h2 {
@@ -180,20 +229,27 @@
     .grid-cards {
       display: flex;
       flex-direction: row;
-      justify-content: space-between;
       gap: 16px;
       width: 100%;
+      box-sizing: border-box;
     }
 
     .card {
       background-color: var(--bg-card);
       border: 1px solid var(--border-color);
-      padding: 20px;
+      padding: 22px;
       border-radius: 12px;
+      width: 100%;
+      box-sizing: border-box;
+      margin-bottom: 20px;
+    }
+
+    .stat-card {
       width: 320px;
+      max-width: 320px;
       flex: 1 1 0px;
       min-width: 0;
-      box-sizing: border-box;
+      margin-bottom: 0;
     }
 
     .stat-card h3 {
@@ -212,6 +268,7 @@
     .stat-desc {
       font-size: 12px;
       color: var(--text-secondary);
+      line-height: 1.4;
     }
 
     /* Form Controls & Buttons */
@@ -229,6 +286,7 @@
     .input-row {
       display: flex;
       gap: 10px;
+      max-width: 600px;
     }
 
     input[type="text"] {
@@ -281,10 +339,11 @@
     .btn-group {
       display: flex;
       gap: 10px;
+      flex-wrap: wrap;
     }
 
     .toolbar {
-      margin-top: 12px;
+      margin-top: 14px;
       display: flex;
       gap: 10px;
     }
@@ -294,6 +353,10 @@
       border: 1px solid var(--border-color);
       border-radius: 8px;
       display: block;
+      width: 100%;
+      max-width: 100%;
+      height: 320px;
+      box-sizing: border-box;
     }
   </style>
 </head>
@@ -364,8 +427,8 @@
         <!-- Tab 2: Canvas Demo -->
         <div class="tab-panel" id="panel-canvas" style="display: none;">
           <div class="card">
-            <h3>🎨 实时高性能 2D/3D 画布</h3>
-            <canvas id="interactive-canvas" width="700" height="320"></canvas>
+            <h3 style="margin-bottom: 14px;">🎨 实时高性能 2D/3D 画布</h3>
+            <canvas id="interactive-canvas" width="960" height="320"></canvas>
             <div class="toolbar">
               <button id="btn-spawn-particles" class="btn btn-primary">生成动态粒子 ✨</button>
               <button id="btn-clear-canvas" class="btn">清空画布</button>
@@ -377,8 +440,8 @@
         <div class="tab-panel" id="panel-sound" style="display: none;">
           <div class="card">
             <h3>🔊 原生 Web Audio API 声音合成</h3>
-            <p>基于系统底层双缓冲无锁 PCM 音频流驱动，低延迟发声：</p>
-            <div class="btn-group" style="margin-top: 15px;">
+            <p style="margin: 10px 0 16px 0; color: var(--text-secondary); font-size: 14px;">基于系统底层双缓冲无锁 PCM 音频流驱动，低延迟发声：</p>
+            <div class="btn-group">
               <button id="btn-sound-sine" class="btn btn-accent">440Hz 纯正弦波</button>
               <button id="btn-sound-synth" class="btn btn-accent">和弦合成音 🎵</button>
               <button id="btn-sound-noise" class="btn btn-accent">白噪声风声 💨</button>
@@ -389,7 +452,7 @@
         <!-- Tab 4: Settings -->
         <div class="tab-panel" id="panel-settings" style="display: none;">
           <div class="card">
-            <h3>⚙️ 动态应用修改与配置</h3>
+            <h3 style="margin-bottom: 16px;">⚙️ 动态应用修改与配置</h3>
             <div class="form-group">
               <label>动态修改窗口标题：</label>
               <div class="input-row">

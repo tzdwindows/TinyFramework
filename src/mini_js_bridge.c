@@ -1556,7 +1556,10 @@ static JSValue js_setStyle(JSContext *ctx, JSValueConst tv, int argc, JSValueCon
         mini_node_set_attribute(n, "style", new_style);
         n->dirty_paint = 1;
         if (b->doc)
+        {
+            mini_dom_restyle(b->doc);
             b->doc->dirty = 1;
+        }
     }
     JS_FreeCString(ctx, p);
     JS_FreeCString(ctx, v);
