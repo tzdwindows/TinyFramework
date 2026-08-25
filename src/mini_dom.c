@@ -6374,10 +6374,23 @@ static void layout_node(struct MiniNode *n, float x, float y,
                 for (int ki = 0; ki < kcount; ki++)
                 {
                     struct MiniNode *c = flex_kids[ki];
+                    int ai = (c->style.align_self >= 0) ? c->style.align_self : s->align_items;
+                    if (!row && (ai == 0 || ai == 5))
+                    {
+                        float target_w = cross - c->style.margin[1] - c->style.margin[3];
+                        if (target_w > c->style.w && c->style.len_w.unit != 1)
+                            c->style.w = target_w;
+                    }
+                    else if (row && (ai == 0 || ai == 5))
+                    {
+                        float target_h = cross - c->style.margin[0] - c->style.margin[2];
+                        if (target_h > c->style.h && c->style.len_h.unit != 1)
+                            c->style.h = target_h;
+                    }
+
                     float child_cross = row ? c->style.h : c->style.w;
                     int has_cross_auto_margin = row ? (c->style.len_margin[0].unit == 8 || c->style.len_margin[2].unit == 8)
                                                     : (c->style.len_margin[1].unit == 8 || c->style.len_margin[3].unit == 8);
-                    int ai = (c->style.align_self >= 0) ? c->style.align_self : s->align_items;
                     float off = 0.0f;
                     if (!has_cross_auto_margin)
                     {

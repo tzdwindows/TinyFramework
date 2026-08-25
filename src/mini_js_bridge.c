@@ -1496,6 +1496,10 @@ static JSValue js_setAttribute(JSContext *ctx, JSValueConst tv, int argc, JSValu
         return JS_EXCEPTION;
     }
     mini_node_set_attribute(n, k, v);
+    if (!strcmp(k, "class") || !strcmp(k, "id"))
+    {
+        if (b->doc) mini_dom_restyle(b->doc);
+    }
     if (!strcmp(k, "style"))
     {
         /* inline CSS: "color:red;background:#000;font-size:14px" */

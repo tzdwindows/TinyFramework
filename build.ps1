@@ -36,6 +36,7 @@ $COMMON_CFLAGS = @(
 )
 
 $LDFLAGS = @(
+    "-mwindows",
     "-fuse-ld=lld",
     "-Wl,--pdb=build\tiny_app.pdb"
 )
@@ -208,6 +209,24 @@ foreach ($src in $SOURCES) {
         }
         $relinkNeeded = $true
     }
+}
+
+$rcObj = "build\app_objs\app_icon.res.o"
+if (Test-Path "src\app.rc") {
+    $rcItem = Get-Item "src\app.rc"
+    $rcNeeded = $false
+    if (-not (Test-Path $rcObj)) {
+        $rcNeeded = $true
+    }
+    elseif ($rcItem.LastWriteTime -gt (Get-Item $rcObj).LastWriteTime) {
+        $rcNeeded = $true
+    }
+    if ($rcNeeded) {
+        Write-Host "Compiling resources src\app.rc ..." -ForegroundColor Gray
+        & windres "src\app.rc" -O coff -o $rcObj
+        $relinkNeeded = $true
+    }
+    $appObjs += $rcObj
 }
 
 # 8. Link Executable

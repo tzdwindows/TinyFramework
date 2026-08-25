@@ -667,6 +667,9 @@ MiniResult mini_app_create(const MiniWindowConfig *cfg, MiniApp **out)
             }
         }
         if (!pri_loaded)
+        {
+            fprintf(stderr, "[app] Primary font not found; using 5x7 bitmap fallback\n");
+        }
         /* Load emoji fallback font for full Unicode/Emoji symbol support */
         if (win_dir[0])
         {
@@ -1349,6 +1352,31 @@ int main(int argc, char **argv)
         mini_logf(MINI_LOG_ERROR, "app", "load failed: %s", js);
         mini_app_destroy(app);
         return 1;
+    }
+
+    /* If encrypted bundle app.pak exists, decrypt and evaluate it in RAM */
+    FILE *fpk = fopen("app.pak", "rb");
+    if (fpk)
+    {
+        fseek(fpk, 0, SEEK_END);
+        long psz = ftell(fpk);
+        fseek(fpk, 0, SEEK_SET);
+        if (psz > 0)
+        {
+            uint8_t *pbuf = (uint8_t *)malloc((size_t)psz);
+            if (pbuf && fread(pbuf, 1, (size_t)psz, fpk) == (size_t)psz)
+            {
+                static const uint8_t default_vfs_key[32] = {
+                    0x54,0x69,0x6e,0x79,0x46,0x72,0x61,0x6d,
+                    0x65,0x77,0x6f,0x72,0x6b,0x53,0x65,0x63,
+                    0x75,0x72,0x65,0x4b,0x65,0x79,0x32,0x30,
+                    0x32,0x36,0x21,0x40,0x23,0x24,0x25,0x5e
+                };
+                mini_app_load_encrypted(app, pbuf, (size_t)psz, default_vfs_key);
+            }
+            if (pbuf) free(pbuf);
+        }
+        fclose(fpk);
     }
     fprintf(stderr, "[app] running %s (frame cap=%ld, CDP :%u)\n", js, g_frame_cap, cdp_port);
     mini_logf(MINI_LOG_INFO, "app", "running %s (frame cap=%ld, CDP :%u)",

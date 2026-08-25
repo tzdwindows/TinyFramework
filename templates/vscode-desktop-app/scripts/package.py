@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 # package.py — TinyFramework Desktop App Packager & Encryptor
-import os, sys, shutil, json, argparse, struct
+import os, sys, shutil, json, argparse, struct, subprocess
+
+DEFAULT_KEY = b"TinyFrameworkSecureKey2026!@#$%^"
 
 def encrypt_chacha20(data, key):
-    # RFC 8439 ChaCha20-Poly1305 AEAD
     try:
         from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
         chacha = ChaCha20Poly1305(key)
         nonce = os.urandom(12)
         ct = chacha.encrypt(nonce, data, None)
-        return nonce + ct # [12-byte nonce][ciphertext + 16-byte tag]
+        return nonce + ct
     except ImportError:
-        # Fallback simple XOR cipher if cryptography package not installed
+        # Fallback XOR cipher
         nonce = os.urandom(12)
         ct = bytearray(len(data))
         for i in range(len(data)):
@@ -42,20 +43,21 @@ def main():
     print(f"==================================================")
     print(f"  TinyFramework Packaging & Export Tool")
     print(f"  App Name: {app_name}")
-    print(f"  Encryption: {'ENABLED' if args.encrypt else 'DISABLED'}")
+    print(f"  GUI Subsystem: Windows (No Console Window)")
+    print(f"  Encryption: {'ENABLED (ChaCha20)' if args.encrypt else 'DISABLED'}")
     print(f"  Output Dir: {dist_dir}")
     print(f"==================================================")
 
-    # 1. Copy TinyFramework Engine
+    # 1. Copy TinyFramework Engine Executable
     engine_src = os.path.join(project_dir, "..", "..", "build", "tiny_app.exe")
     if not os.path.exists(engine_src):
         engine_src = os.path.join(project_dir, "bin", "tiny_app.exe")
     
     target_exe = os.path.join(dist_dir, f"{app_name}.exe")
     shutil.copyfile(engine_src, target_exe)
-    print(f"[1/4] Copied standalone engine -> {app_name}.exe ({os.path.getsize(target_exe)/(1024*1024):.2f} MB)")
+    print(f"[1/4] Copied GUI engine -> {app_name}.exe ({os.path.getsize(target_exe)/(1024*1024):.2f} MB)")
 
-    # 2. Copy Assets & Config
+    # 2. Copy Assets & Custom Icon
     dist_assets = os.path.join(dist_dir, "assets")
     os.makedirs(dist_assets, exist_ok=True)
     src_assets = os.path.join(project_dir, "assets")
@@ -63,7 +65,6 @@ def main():
         for f in os.listdir(src_assets):
             shutil.copyfile(os.path.join(src_assets, f), os.path.join(dist_assets, f))
 
-    # 3. Handle App Icon
     icon_path = args.icon or config.get("icon", "assets/icon.png")
     if icon_path and os.path.exists(os.path.join(project_dir, icon_path)):
         target_icon = os.path.join(dist_dir, icon_path)
@@ -71,34 +72,31 @@ def main():
         shutil.copyfile(os.path.join(project_dir, icon_path), target_icon)
         print(f"[2/4] Packaged custom application icon: {icon_path}")
 
-    # 4. Process & Encrypt JS / HTML
+    # 3. Process & Encrypt JS / HTML
     dist_src = os.path.join(dist_dir, "src")
     os.makedirs(dist_src, exist_ok=True)
     
     if args.encrypt:
-        print("[3/4] Encrypting application JavaScript files with ChaCha20-Poly1305...")
-        key = os.urandom(32)
+        print("[3/4] Encrypting JavaScript source code with ChaCha20-Poly1305...")
         js_file = os.path.join(project_dir, "src", "app.js")
         with open(js_file, "rb") as f:
             js_data = f.read()
         
-        enc_bundle = encrypt_chacha20(js_data, key)
+        enc_bundle = encrypt_chacha20(js_data, DEFAULT_KEY)
         with open(os.path.join(dist_dir, "app.pak"), "wb") as f:
             f.write(enc_bundle)
 
-        # Write distribution HTML that decrypts & runs VFS bundle
         shutil.copyfile(os.path.join(project_dir, "src", "index.html"), os.path.join(dist_src, "index.html"))
-        shutil.copyfile(os.path.join(project_dir, "src", "styles.css"), os.path.join(dist_src, "styles.css"))
-        # Protected stub in app.js
+        # Protected placeholder
         with open(os.path.join(dist_src, "app.js"), "w", encoding="utf-8") as f:
-            f.write("// Protected VFS Bundle: JavaScript logic is encrypted in app.pak\n")
+            f.write("// [Encrypted VFS Bundle] JavaScript logic is encrypted in app.pak and loaded into RAM.\n")
         print(f"      Encrypted bundle created -> dist/app.pak ({len(enc_bundle)} bytes)")
     else:
-        print("[3/4] Copying source files without encryption (dev bundle)...")
+        print("[3/4] Copying source files without encryption...")
         for f in os.listdir(os.path.join(project_dir, "src")):
             shutil.copyfile(os.path.join(project_dir, "src", f), os.path.join(dist_src, f))
 
-    # 5. Output config
+    # 4. Output app.config.json
     dist_config = config.copy()
     dist_config["name"] = app_name
     dist_config["encrypted"] = args.encrypt
@@ -107,7 +105,7 @@ def main():
 
     print(f"[4/4] Generated dist/app.config.json")
     print(f"\nSUCCESS! Standalone Desktop App successfully created in {dist_dir}/")
-    print(f"Run '{app_name}.exe' directly to launch your application!")
+    print(f"Run '{app_name}.exe' directly to launch your application without console popup!")
 
 if __name__ == '__main__':
     main()

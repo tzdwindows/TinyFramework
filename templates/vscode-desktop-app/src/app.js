@@ -1,20 +1,40 @@
-// TinyFramework Desktop Application Template Entry
-console.log("[App] Desktop Application Loaded successfully!");
+// 1. Navigation Tab Switching with robust event delegation
+document.addEventListener('click', (e) => {
+  let target = e.target;
+  let item = null;
+  while (target && target !== document.body) {
+    if (target.classList && target.classList.contains('nav-item')) {
+      item = target;
+      break;
+    }
+    target = target.parentNode;
+  }
+  if (!item) return;
+  const tabName = item.getAttribute('data-tab');
+  if (!tabName) return;
 
-// 1. Navigation Tab Switching
-const navItems = document.querySelectorAll('.nav-item');
-const tabPanels = document.querySelectorAll('.tab-panel');
+  const navItems = document.querySelectorAll('.nav-item');
+  const tabPanels = document.querySelectorAll('.tab-panel');
 
-navItems.forEach(item => {
-  item.addEventListener('click', () => {
-    navItems.forEach(n => n.classList.remove('active'));
-    tabPanels.forEach(p => p.classList.remove('active'));
-    
-    item.classList.add('active');
-    const tabName = item.getAttribute('data-tab');
-    const panel = document.getElementById('panel-' + tabName);
-    if (panel) panel.classList.add('active');
+  navItems.forEach(n => {
+    n.classList.remove('active');
+    n.style.backgroundColor = 'transparent';
+    n.style.color = 'var(--text-secondary)';
   });
+  tabPanels.forEach(p => {
+    p.classList.remove('active');
+    p.style.display = 'none';
+  });
+
+  item.classList.add('active');
+  item.style.backgroundColor = 'var(--accent-color)';
+  item.style.color = '#ffffff';
+
+  const panel = document.getElementById('panel-' + tabName);
+  if (panel) {
+    panel.classList.add('active');
+    panel.style.display = 'block';
+  }
 });
 
 // 2. Dynamic Title Modification
