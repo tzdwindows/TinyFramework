@@ -1970,6 +1970,53 @@ void mini_events_handle_mouse_move(MiniEventState *st, float x, float y, int mod
     if (st->sel.is_selecting && t)
         selection_extend(st, t, x, y);
 
+    /* Extend text input selection when dragging within/across an input/textarea */
+    if ((st->buttons_mask & 1) && st->press_target && is_text_input(st->press_target))
+    {
+        struct MiniNode *it = st->press_target;
+        const MiniStyle *s = &it->style;
+        int is_ta = !strcmp(it->tag, "textarea");
+        float fs = s->font_size > 0 ? s->font_size : 12.0f;
+        float ls = s->letter_set ? s->len_letter.v : 0.0f;
+        float x0 = s->abs_x + (is_ta ? 4.0f : 5.0f);
+        const char *val = control_value_get(it);
+        int new_off = 0;
+        if (is_ta)
+        {
+            float y0 = s->abs_y + 4.0f;
+            float line_h = fs + 4.0f;
+            int target_line = (int)((y - y0) / line_h);
+            if (target_line < 0) target_line = 0;
+            int L = (int)strlen(val);
+            int i = 0, ln = 0, line_start = 0;
+            while (ln < target_line && i < L)
+            {
+                if (val[i] == '\n')
+                {
+                    ln++;
+                    line_start = i + 1;
+                }
+                i++;
+            }
+            int col = offset_from_x(val + line_start, x - x0, fs, ls);
+            new_off = line_start + col;
+        }
+        else
+        {
+            new_off = offset_from_x(val, x - x0, fs, ls);
+        }
+        if (new_off != it->caret_offset)
+        {
+            it->caret_offset = new_off;
+            fire_caret(st, it);
+            if (st->doc)
+            {
+                st->doc->dirty = 1;
+                st->doc->paint_dirty = 1;
+            }
+        }
+    }
+
     if (ev_t)
     {
         MiniEvent ev = make_mouse("mousemove", ev_t, x, y, mods);
@@ -2112,6 +2159,7 @@ void mini_events_handle_mouse_button(MiniEventState *st, int button, int action,
                 {
                     t->caret_offset = offset_from_x(val, x - x0, fs, ls);
                 }
+                t->sel_anchor_off = t->caret_offset;
                 fire_caret(st, t);
                 mini_events_restyle(st);
             }
@@ -2184,6 +2232,11 @@ void mini_events_handle_mouse_button(MiniEventState *st, int button, int action,
         }
 
         struct MiniNode *rel_node = t ? t : (st->press_target ? st->press_target : (st->doc ? st->doc->body : NULL));
+        if (w3c == 0 && st->press_target && is_text_input(st->press_target))
+        {
+            if (st->press_target->sel_anchor_off == st->press_target->caret_offset)
+                st->press_target->sel_anchor_off = -1;
+        }
         int mask_bit = (w3c == 0) ? 1 : (w3c == 2) ? 2 : 4;
         st->buttons_mask &= ~mask_bit;
         if (rel_node)
@@ -2214,15 +2267,15 @@ void mini_events_handle_mouse_button(MiniEventState *st, int button, int action,
             else if (t) click_tgt = t;
             else if (st->press_target) click_tgt = st->press_target;
 
-            if (click_tgt)
+            if (click_tgt && w3c == 0)
             {
                 ev = make_mouse("click", click_tgt, x, y, mods);
-                ev.button = w3c;
+                ev.button = 0;
                 ev.buttons = st->buttons_mask;
                 ev.bubbles = 1;
                 mini_event_dispatch(st, &ev, click_tgt);
 
-                if (!ev.preventDefault && w3c == 0)
+                if (!ev.preventDefault)
                 {
                     for (struct MiniNode *anc = click_tgt; anc; anc = anc->parent)
                     {
@@ -2297,7 +2350,7 @@ void mini_events_handle_mouse_button(MiniEventState *st, int button, int action,
                     (now - st->last_click_time) < 0.5)
                 {
                     ev = make_mouse("dblclick", t, x, y, mods);
-                    ev.button = w3c;
+                    ev.button = 0;
                     ev.bubbles = 1;
                     mini_event_dispatch(st, &ev, t);
                     st->last_click_target = NULL;
@@ -2307,12 +2360,16 @@ void mini_events_handle_mouse_button(MiniEventState *st, int button, int action,
                     st->last_click_target = t;
                     st->last_click_time = now;
                 }
-                if (w3c == 2)
+            }
+            else if (w3c == 2)
+            {
+                struct MiniNode *cmt = t ? t : (st->press_target ? st->press_target : (st->doc ? st->doc->body : NULL));
+                if (cmt)
                 {
-                    MiniEvent cmev = make_mouse("contextmenu", t, x, y, mods);
+                    MiniEvent cmev = make_mouse("contextmenu", cmt, x, y, mods);
                     cmev.button = 2;
                     cmev.bubbles = 1;
-                    mini_event_dispatch(st, &cmev, t);
+                    mini_event_dispatch(st, &cmev, cmt);
                 }
             }
             mini_events_restyle(st);

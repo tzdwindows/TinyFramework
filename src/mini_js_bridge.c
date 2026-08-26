@@ -8599,7 +8599,12 @@ int mini_bridge_eval(MiniBridge *b, const char *src, size_t len, const char *fil
     {
         JSValue ex = JS_GetException(b->ctx);
         const char *s = JS_ToCString(b->ctx, ex);
-        fprintf(stderr, "[eval error] %s\n", s ? s : "?");
+        JSValue stack = JS_GetPropertyStr(b->ctx, ex, "stack");
+        const char *stk = JS_ToCString(b->ctx, stack);
+        fprintf(stderr, "[eval error in %s] %s\n%s\n", filename ? filename : "?", s ? s : "?", stk ? stk : "");
+        if (stk)
+            JS_FreeCString(b->ctx, stk);
+        JS_FreeValue(b->ctx, stack);
         JS_FreeCString(b->ctx, s);
         JS_FreeValue(b->ctx, ex);
         JS_FreeValue(b->ctx, v);

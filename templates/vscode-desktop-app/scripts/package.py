@@ -86,7 +86,9 @@ def main():
         with open(os.path.join(dist_dir, "app.pak"), "wb") as f:
             f.write(enc_bundle)
 
-        shutil.copyfile(os.path.join(project_dir, "src", "index.html"), os.path.join(dist_src, "index.html"))
+        for f in os.listdir(os.path.join(project_dir, "src")):
+            if f != "app.js":
+                shutil.copyfile(os.path.join(project_dir, "src", f), os.path.join(dist_src, f))
         # Protected placeholder
         with open(os.path.join(dist_src, "app.js"), "w", encoding="utf-8") as f:
             f.write("// [Encrypted VFS Bundle] JavaScript logic is encrypted in app.pak and loaded into RAM.\n")
