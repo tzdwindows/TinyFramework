@@ -615,8 +615,6 @@ struct MiniNode *mini_node_create_element(const char *tag)
     if (info->category == MINI_CAT_INTERACTIVE && buf[0] == 's' && buf[1] == 'u')
         n->style.padding[3] = 20.0f;
 
-    if (!strcmp(buf, "button"))
-        n->style.justify_content = 1;
     if (!strcmp(buf, "em") || !strcmp(buf, "i") || !strcmp(buf, "cite"))
         n->style.font_style = 1;
     if (!strcmp(buf, "strong") || !strcmp(buf, "b"))
@@ -7211,7 +7209,9 @@ static void render_input(struct MiniNode *n, MiniRenderer *r)
         !strcmp(type, "image"))
     {
         /* removed default opaque fill */
-        mini_draw_rect_stroke(r, x, y, w, h, 1, 0.45f, 0.45f, 0.45f, 0.9f);
+        if (!s->has_border) {
+            mini_draw_rect_stroke(r, x, y, w, h, 1, 0.45f, 0.45f, 0.45f, 0.9f);
+        }
         const char *lbl = mini_node_get_attribute(n, "value");
         if (!lbl || !lbl[0])
             lbl = !strcmp(type, "submit")  ? "Submit"
@@ -7224,22 +7224,13 @@ static void render_input(struct MiniNode *n, MiniRenderer *r)
     }
     /* default: text / password / email / number / date / time / search / url / tel */
     int is_trans = (s->bg_a == 0.0f && mini_node_get_attribute(n, "style") && strstr(mini_node_get_attribute(n, "style"), "transparent"));
-    if (!is_trans)
+    if (!is_trans && s->bg_a == 0.0f && !s->has_gradient)
     {
-        float br = (s->bg_a > 0) ? s->bg_r : 1.0f;
-        float bg = (s->bg_a > 0) ? s->bg_g : 1.0f;
-        float bb = (s->bg_a > 0) ? s->bg_b : 1.0f;
-        float ba = (s->bg_a > 0) ? s->bg_a : 1.0f;
-        mini_draw_rect(r, x, y, w, h, br, bg, bb, ba);
+        mini_draw_rect(r, x, y, w, h, 1.0f, 1.0f, 1.0f, 1.0f);
     }
-    int no_border = (s->border_style[0] == 0 && s->has_border);
-    if (!no_border && !is_trans)
+    if (!is_trans && !s->has_border)
     {
-        float sr = s->has_border ? s->border_r : 0.4f;
-        float sg = s->has_border ? s->border_g : 0.4f;
-        float sb = s->has_border ? s->border_b : 0.4f;
-        float sa = s->has_border ? s->border_a : 0.9f;
-        mini_draw_rect_stroke(r, x, y, w, h, s->has_border ? s->border_w[0] : 1.0f, sr, sg, sb, sa);
+        mini_draw_rect_stroke(r, x, y, w, h, 1.0f, 0.4f, 0.4f, 0.4f, 0.9f);
     }
     const char *val = mini_node_get_attribute(n, "value");
     float fs = s->font_size > 0.0f ? s->font_size : 12.0f;
@@ -7371,25 +7362,16 @@ static void render_form_control(struct MiniNode *n, MiniRenderer *r)
     }
     if (!strcmp(tag, "button"))
     {
-        if (s->bg_a == 0.0f && !s->has_gradient)
-        {
-            /* removed default opaque fill */
-            mini_draw_rect_stroke(r, x, y, w, h, 1, 0.45f, 0.45f, 0.45f, 0.9f);
-        }
         return;
     }
     if (!strcmp(tag, "textarea"))
     {
-        float br = (s->bg_a > 0) ? s->bg_r : 1.0f;
-        float bg = (s->bg_a > 0) ? s->bg_g : 1.0f;
-        float bb = (s->bg_a > 0) ? s->bg_b : 1.0f;
-        float ba = (s->bg_a > 0) ? s->bg_a : 1.0f;
-        mini_draw_rect(r, x, y, w, h, br, bg, bb, ba);
-        float sr = s->has_border ? s->border_r : 0.4f;
-        float sg = s->has_border ? s->border_g : 0.4f;
-        float sb = s->has_border ? s->border_b : 0.4f;
-        float sa = s->has_border ? s->border_a : 0.9f;
-        mini_draw_rect_stroke(r, x, y, w, h, s->has_border ? s->border_w[0] : 1.0f, sr, sg, sb, sa);
+        if (s->bg_a == 0.0f && !s->has_gradient) {
+            mini_draw_rect(r, x, y, w, h, 1.0f, 1.0f, 1.0f, 1.0f);
+        }
+        if (!s->has_border) {
+            mini_draw_rect_stroke(r, x, y, w, h, 1.0f, 0.4f, 0.4f, 0.4f, 0.9f);
+        }
 
         const char *tval = (n->text && n->text[0]) ? n->text : mini_node_get_attribute(n, "value");
         float fs = s->font_size > 0.0f ? s->font_size : 12.0f;
@@ -7433,8 +7415,12 @@ static void render_form_control(struct MiniNode *n, MiniRenderer *r)
     }
     if (!strcmp(tag, "select"))
     {
-        mini_draw_rect(r, x, y, w, h, 1, 1, 1, 1);
-        mini_draw_rect_stroke(r, x, y, w, h, 1, 0.4f, 0.4f, 0.4f, 0.9f);
+        if (s->bg_a == 0.0f && !s->has_gradient) {
+            mini_draw_rect(r, x, y, w, h, 1.0f, 1.0f, 1.0f, 1.0f);
+        }
+        if (!s->has_border) {
+            mini_draw_rect_stroke(r, x, y, w, h, 1.0f, 0.4f, 0.4f, 0.4f, 0.9f);
+        }
         float ax = x + w - 10, ay = y + h / 2;
         mini_draw_triangle(r, ax - 4, ay - 3, ax + 4, ay - 3, ax, ay + 3,
                            0.3f, 0.3f, 0.3f, 1.0f);
