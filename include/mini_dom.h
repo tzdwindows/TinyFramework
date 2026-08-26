@@ -144,6 +144,8 @@ extern "C"
       int align_self;     /* -1=auto (use align_items), else 0..4 like align_items */
       uint8_t font_set;   /* font-size explicitly set (else keep the default) */
       uint8_t color_set;  /* color explicitly set (else inherit from parent)   */
+      uint8_t bg_set;     /* background / background-color explicitly set      */
+      uint8_t border_set; /* border / border-width / border:none explicitly set */
 
       /* --- New Modern CSS Properties --- */
       float border_radius;

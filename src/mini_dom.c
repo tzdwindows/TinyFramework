@@ -2488,6 +2488,7 @@ void mini_style_set(struct MiniNode *n, const char *prop, const char *val)
     else if (!strncmp(prop, "border", 6))
     {
         s->has_border = 1;
+        s->border_set = 1;
         int side[4] = {1, 1, 1, 1};
         const char *rest = prop + 6;
         int aspect = 0;
@@ -2893,6 +2894,7 @@ void mini_style_set(struct MiniNode *n, const char *prop, const char *val)
     }
     else if (!strcmp(prop, "background") || !strcmp(prop, "background-color") || !strcmp(prop, "background-image"))
     {
+        s->bg_set = 1;
         const char *u = strstr(v, "url(");
         if (u)
         {
@@ -5372,6 +5374,110 @@ static void layout_multicol(struct MiniNode *n, float content_left,
     *out_bottom = max_bottom;
 }
 
+static float measure_node_intrinsic_w(const struct MiniNode *n, float font_size, float letter_spacing)
+{
+    if (!n)
+        return 0.0f;
+    if (n->type == MN_TEXT_NODE)
+    {
+        if (!n->text || !n->text[0] || is_all_ws(n->text))
+            return 0.0f;
+        char buf[512];
+        const char *src = n->text;
+        while (*src && isspace((unsigned char)*src))
+            src++;
+        size_t bi = 0;
+        int in_ws = 0;
+        while (*src && bi < sizeof(buf) - 1)
+        {
+            if (isspace((unsigned char)*src))
+            {
+                if (!in_ws)
+                {
+                    buf[bi++] = ' ';
+                    in_ws = 1;
+                }
+            }
+            else
+            {
+                buf[bi++] = *src;
+                in_ws = 0;
+            }
+            src++;
+        }
+        while (bi > 0 && isspace((unsigned char)buf[bi - 1]))
+            bi--;
+        buf[bi] = 0;
+        return (bi > 0) ? mini_text_measure_ex(buf, font_size, letter_spacing) : 0.0f;
+    }
+    if (n->type != MN_ELEMENT_NODE && n->type != MN_DOCUMENT_FRAGMENT_NODE)
+        return 0.0f;
+    if (n->style.display == MINI_DISPLAY_NONE || n->style.position == 2 || n->style.position == 3)
+        return 0.0f;
+
+    const MiniStyle *s = &n->style;
+    float ph = s->padding[1] + s->padding[3];
+    float mh = s->margin[1] + s->margin[3];
+
+    /* Explicit width in CSS */
+    if (s->len_w.v > 0.0f && s->len_w.unit == 0)
+        return (s->box_sizing == 1 ? s->len_w.v : s->len_w.v + ph) + mh;
+
+    /* Replaced elements / form controls */
+    if (n->tag)
+    {
+        if (!strcmp(n->tag, "svg") || !strcmp(n->tag, "img") ||
+            !strcmp(n->tag, "canvas") || !strcmp(n->tag, "video"))
+        {
+            float w = (s->w > 0.0f) ? s->w : 0.0f;
+            if (w <= 0.0f)
+            {
+                const char *aw = mini_node_get_attribute(n, "width");
+                if (aw && aw[0])
+                    w = (float)atof(aw);
+                else if (!strcmp(n->tag, "canvas"))
+                    w = 300.0f;
+                else if (!strcmp(n->tag, "svg"))
+                    w = 16.0f;
+            }
+            return (s->box_sizing == 1 ? w : w + ph) + mh;
+        }
+        if (!strcmp(n->tag, "input") || !strcmp(n->tag, "select") || !strcmp(n->tag, "textarea"))
+        {
+            float w = (s->w > 0.0f) ? s->w : 150.0f;
+            return (s->box_sizing == 1 ? w : w + ph) + mh;
+        }
+    }
+
+    /* Traverse children */
+    float child_w = 0.0f;
+    float fs = s->font_size > 0.0f ? s->font_size : font_size;
+    float ls = s->len_letter.v;
+    int is_row = (s->display == MINI_DISPLAY_FLEX || s->display == MINI_DISPLAY_INLINE_FLEX)
+                     ? (s->flex_direction == 0 || s->flex_direction == 2)
+                     : (s->display == MINI_DISPLAY_INLINE);
+
+    int kcount = 0;
+    for (const struct MiniNode *c = n->first_child; c; c = c->next_sibling)
+    {
+        if (c->style.display == MINI_DISPLAY_NONE || c->style.position == 2 || c->style.position == 3)
+            continue;
+        if (c->type == MN_TEXT_NODE && (!c->text || is_all_ws(c->text)))
+            continue;
+        float cw = measure_node_intrinsic_w(c, fs, ls);
+        if (is_row)
+            child_w += cw;
+        else if (cw > child_w)
+            child_w = cw;
+        kcount++;
+    }
+
+    if (is_row && kcount > 1 && s->len_gap.v > 0.0f && s->len_gap.unit == 0)
+        child_w += (kcount - 1) * s->len_gap.v;
+
+    return child_w + ph + mh;
+}
+
 static void layout_node(struct MiniNode *n, float x, float y,
                         float avail_w, float avail_h)
 {
@@ -5734,52 +5840,9 @@ static void layout_node(struct MiniNode *n, float x, float y,
         else
             cw = s->w + ph;
     }
-    /* 2. inline-flex / 弹性收缩 flex 容器：按子项内容总宽 shrink-to-fit */
-    else if (s->display == MINI_DISPLAY_INLINE_FLEX ||
-             (s->display == MINI_DISPLAY_FLEX && n->parent &&
-              s->position != 2 && s->position != 3 &&
-              (n->parent->style.display == MINI_DISPLAY_FLEX || n->parent->style.display == MINI_DISPLAY_INLINE_FLEX) &&
-              !n->parent->style.is_grid))
-    {
-        float kids_w = 0.0f;
-        int kcount = 0;
-        for (struct MiniNode *k = n->first_child; k; k = k->next_sibling)
-        {
-            if (k->style.display != MINI_DISPLAY_NONE && k->style.position != 2 && k->style.position != 3 &&
-                !(k->type == MN_TEXT_NODE && (!k->text || is_all_ws(k->text))))
-            {
-                float kw = 0.0f;
-                float k_fs = k->style.font_size > 0 ? k->style.font_size : (s->font_size > 0 ? s->font_size : 16.0f);
-                if (k->style.len_w.v > 0.0f || k->style.len_w.unit != 0)
-                    kw = resolve_field(k, CF_W, k->style.len_w, avail_w, k_fs, g_lctx.root_font, g_lctx.vw, g_lctx.vh);
-                else if (k->type == MN_TEXT_NODE && k->text)
-                    kw = mini_text_measure_ex(k->text, k_fs, k->style.len_letter.v);
-                else
-                {
-                    char tb[512];
-                    size_t o = 0;
-                    collect_text_content(k, tb, sizeof tb, &o);
-                    tb[o < sizeof tb ? o : sizeof tb - 1] = 0;
-                    if (o > 0)
-                        kw = mini_text_measure_ex(tb, k_fs, k->style.len_letter.v) + k->style.padding[1] + k->style.padding[3];
-                }
-                float item_w = kw + k->style.margin[1] + k->style.margin[3];
-                if (s->flex_direction == 0)
-                    kids_w += item_w;
-                else if (item_w > kids_w)
-                    kids_w = item_w;
-                kcount++;
-            }
-        }
-        if (s->flex_direction == 0 && kcount > 1)
-            kids_w += (kcount - 1) * gap_px;
-        cw = kids_w + ph;
-    }
-    /* 2b. 替换/表单控件元素（canvas/img/video/svg/input/select/textarea/progress/meter）
+    /* 2. 替换/表单控件元素（canvas/img/video/svg/input/select/textarea/progress/meter）
        无显式 CSS 宽但已有固有尺寸（来自 width 属性或默认 300/150/80/50 等）：用固有
-       宽度，而非走 inline 空元素的文本宽≈0。否则 <textarea>/<progress>/<meter>/
-       <input> 在无 CSS 宽时被分支#3 算成 cw≈0，getBoundingClientRect width=0，
-       控件不渲染（实测 m7）。button 例外：其宽度按标签文本 shrink-to-fit（分支#3）。 */
+       宽度，而非走 inline 空元素的文本宽≈0。 */
     else if (n->tag &&
              (!strcmp(n->tag, "canvas") || !strcmp(n->tag, "img") ||
               !strcmp(n->tag, "video") || !strcmp(n->tag, "svg") ||
@@ -5790,35 +5853,25 @@ static void layout_node(struct MiniNode *n, float x, float y,
     {
         cw = (s->box_sizing == 1) ? s->w : s->w + ph;
     }
-    /* 3. inline 元素 / 按钮 / flex 中未定宽且无 flex-grow 的子项：根据文本内容自适应宽度 */
-    else if (s->display == MINI_DISPLAY_INLINE || (n->tag && !strcmp(n->tag, "button")) ||
+    /* 3. inline 元素 / 按钮 / inline-flex / flex-row 中未定宽且无 flex-grow 的子项：根据内容自适应宽度 */
+    else if (s->display == MINI_DISPLAY_INLINE || s->display == MINI_DISPLAY_INLINE_FLEX ||
+             (n->tag && !strcmp(n->tag, "button")) ||
              (n->parent &&
               s->position != 2 && s->position != 3 &&
               (n->parent->style.display == MINI_DISPLAY_FLEX || n->parent->style.display == MINI_DISPLAY_INLINE_FLEX) &&
               !n->parent->style.is_grid &&
               s->flex_grow <= 0.0f &&
-              ((n->parent->style.flex_direction == 0) ||
-               (n->parent->style.flex_direction == 1 &&
+              ((n->parent->style.flex_direction == 0 || n->parent->style.flex_direction == 2) ||
+               ((n->parent->style.flex_direction == 1 || n->parent->style.flex_direction == 3) &&
                 (n->parent->style.align_items == 1 || n->parent->style.align_items == 2 || n->parent->style.align_items == 3 ||
                  s->align_self == 1 || s->align_self == 2 || s->align_self == 3)))))
     {
-
-        char tb[1024];
-        size_t o = 0;
-        collect_text_content(n, tb, sizeof tb, &o);
-        tb[o < sizeof tb ? o : sizeof tb - 1] = 0;
-        if (o > 0)
-        {
-            float fs = s->font_size > 0 ? s->font_size : 16.0f;
-            /* 修复：移除 + 2.0f 幽灵宽度。防止子项期望宽度大于 flex 容器预留宽度导致计算溢出 */
-            cw = mini_text_measure_ex(tb, fs, s->len_letter.v) + ph;
-        }
-        else
-        {
-            cw = ph; /* 无文字的 inline 空元素本征宽度仅为内边距，不可撑满容器 */
-        }
+        float fs = s->font_size > 0.0f ? s->font_size : 16.0f;
+        float iw = measure_node_intrinsic_w(n, fs, s->len_letter.v);
+        float mw_h = s->margin[1] + s->margin[3];
+        cw = (iw > mw_h) ? (iw - mw_h) : ph;
     }
-    /* 4. 普通块级 block 元素：默认填满可用父级空间 */
+    /* 4. 普通块级 block 元素 / 弹性伸展 flex 容器：默认填满可用父级空间 */
     else
     {
         cw = (avail_w > mw) ? (avail_w - mw) : 0.0f;
@@ -6222,9 +6275,15 @@ static void layout_node(struct MiniNode *n, float x, float y,
                     {
                         float grow = leftover * (c->style.flex_grow / total_grow);
                         if (row)
+                        {
                             c->style.w += grow;
+                            layout_node(c, s->abs_x + s->padding[3], s->abs_y + s->padding[0], c->style.w, cross);
+                        }
                         else
+                        {
                             c->style.h += grow;
+                            layout_node(c, s->abs_x + s->padding[3], s->abs_y + s->padding[0], cross, c->style.h);
+                        }
                     }
                 }
                 used = main_avail;
@@ -6242,14 +6301,16 @@ static void layout_node(struct MiniNode *n, float x, float y,
                     if (row)
                     {
                         c->style.w -= reduction;
-                        if (c->style.w < 0)
-                            c->style.w = 0;
+                        if (c->style.w < 0.0f)
+                            c->style.w = 0.0f;
+                        layout_node(c, s->abs_x + s->padding[3], s->abs_y + s->padding[0], c->style.w, cross);
                     }
                     else
                     {
                         c->style.h -= reduction;
-                        if (c->style.h < 0)
-                            c->style.h = 0;
+                        if (c->style.h < 0.0f)
+                            c->style.h = 0.0f;
+                        layout_node(c, s->abs_x + s->padding[3], s->abs_y + s->padding[0], cross, c->style.h);
                     }
                 }
                 leftover = 0.0f;
@@ -6335,6 +6396,9 @@ static void layout_node(struct MiniNode *n, float x, float y,
                 {
                     struct MiniNode *c = flex_kids[ki];
                     float child_cross = row ? c->style.h : c->style.w;
+                    float margin_cross_before = row ? c->style.margin[0] : c->style.margin[3];
+                    float margin_cross_after = row ? c->style.margin[2] : c->style.margin[1];
+                    float total_margin_cross = margin_cross_before + margin_cross_after;
                     int has_cross_auto_margin = row ? (c->style.len_margin[0].unit == 8 || c->style.len_margin[2].unit == 8)
                                                     : (c->style.len_margin[1].unit == 8 || c->style.len_margin[3].unit == 8);
                     int ai = (c->style.align_self >= 0) ? c->style.align_self : s->align_items;
@@ -6342,9 +6406,9 @@ static void layout_node(struct MiniNode *n, float x, float y,
                     if (!has_cross_auto_margin)
                     {
                         if (ai == 2)
-                            off = (cross - child_cross) / 2.0f;
+                            off = (cross - child_cross - total_margin_cross) / 2.0f;
                         else if (ai == 3)
-                            off = cross - child_cross;
+                            off = cross - child_cross - total_margin_cross;
                         else if (ai == 4 && row)
                         {
                             float c_ascent = 0.0f;
@@ -6364,8 +6428,8 @@ static void layout_node(struct MiniNode *n, float x, float y,
                     if (off < 0.0f)
                         off = 0.0f;
 
-                    float final_x = row ? (pos - c->style.w - c->style.margin[1]) : (s->abs_x + s->padding[3] + off);
-                    float final_y = row ? (s->abs_y + s->padding[0] + off) : (pos - c->style.h - c->style.margin[2]);
+                    float final_x = row ? (pos - c->style.w - c->style.margin[1]) : (s->abs_x + s->padding[3] + off + c->style.margin[3]);
+                    float final_y = row ? (s->abs_y + s->padding[0] + off + c->style.margin[0]) : (pos - c->style.h - c->style.margin[2]);
 
                     float nx = final_x;
                     float ny = final_y;
@@ -6409,15 +6473,18 @@ static void layout_node(struct MiniNode *n, float x, float y,
                     }
 
                     float child_cross = row ? c->style.h : c->style.w;
+                    float margin_cross_before = row ? c->style.margin[0] : c->style.margin[3];
+                    float margin_cross_after = row ? c->style.margin[2] : c->style.margin[1];
+                    float total_margin_cross = margin_cross_before + margin_cross_after;
                     int has_cross_auto_margin = row ? (c->style.len_margin[0].unit == 8 || c->style.len_margin[2].unit == 8)
                                                     : (c->style.len_margin[1].unit == 8 || c->style.len_margin[3].unit == 8);
                     float off = 0.0f;
                     if (!has_cross_auto_margin)
                     {
                         if (ai == 2)
-                            off = (cross - child_cross) / 2.0f;
+                            off = (cross - child_cross - total_margin_cross) / 2.0f;
                         else if (ai == 3)
-                            off = cross - child_cross;
+                            off = cross - child_cross - total_margin_cross;
                         else if (ai == 4 && row)
                         {
                             float c_ascent = 0.0f;
@@ -6437,11 +6504,11 @@ static void layout_node(struct MiniNode *n, float x, float y,
                     if (off < 0.0f)
                         off = 0.0f;
 
-                    float final_x = row ? pos : (s->abs_x + s->padding[3] + off);
-                    float final_y = row ? (s->abs_y + s->padding[0] + off) : pos;
+                    float final_x = row ? (pos + c->style.margin[3]) : (s->abs_x + s->padding[3] + off + c->style.margin[3]);
+                    float final_y = row ? (s->abs_y + s->padding[0] + off + c->style.margin[0]) : (pos + c->style.margin[0]);
 
-                    float nx = final_x + c->style.margin[3];
-                    float ny = final_y + c->style.margin[0];
+                    float nx = final_x;
+                    float ny = final_y;
                     if (c->first_child)
                     {
                         layout_node(c, nx, ny, c->style.w, c->style.h);
@@ -7223,12 +7290,14 @@ static void render_input(struct MiniNode *n, MiniRenderer *r)
         return;
     }
     /* default: text / password / email / number / date / time / search / url / tel */
-    int is_trans = (s->bg_a == 0.0f && mini_node_get_attribute(n, "style") && strstr(mini_node_get_attribute(n, "style"), "transparent"));
-    if (!is_trans && s->bg_a == 0.0f && !s->has_gradient)
+    int has_custom_bg = s->bg_set || s->has_gradient || (s->bg_a > 0.0f) ||
+                        (mini_node_get_attribute(n, "style") && strstr(mini_node_get_attribute(n, "style"), "transparent"));
+    int has_custom_border = s->border_set || s->has_border;
+    if (!has_custom_bg && s->bg_a == 0.0f && !s->has_gradient)
     {
         mini_draw_rect(r, x, y, w, h, 1.0f, 1.0f, 1.0f, 1.0f);
     }
-    if (!is_trans && !s->has_border)
+    if (!has_custom_border && !s->has_border)
     {
         mini_draw_rect_stroke(r, x, y, w, h, 1.0f, 0.4f, 0.4f, 0.4f, 0.9f);
     }
@@ -7366,10 +7435,13 @@ static void render_form_control(struct MiniNode *n, MiniRenderer *r)
     }
     if (!strcmp(tag, "textarea"))
     {
-        if (s->bg_a == 0.0f && !s->has_gradient) {
+        int has_custom_bg = s->bg_set || s->has_gradient || (s->bg_a > 0.0f) ||
+                            (mini_node_get_attribute(n, "style") && strstr(mini_node_get_attribute(n, "style"), "transparent"));
+        int has_custom_border = s->border_set || s->has_border;
+        if (!has_custom_bg && s->bg_a == 0.0f && !s->has_gradient) {
             mini_draw_rect(r, x, y, w, h, 1.0f, 1.0f, 1.0f, 1.0f);
         }
-        if (!s->has_border) {
+        if (!has_custom_border && !s->has_border) {
             mini_draw_rect_stroke(r, x, y, w, h, 1.0f, 0.4f, 0.4f, 0.4f, 0.9f);
         }
 
@@ -7415,10 +7487,13 @@ static void render_form_control(struct MiniNode *n, MiniRenderer *r)
     }
     if (!strcmp(tag, "select"))
     {
-        if (s->bg_a == 0.0f && !s->has_gradient) {
+        int has_custom_bg = s->bg_set || s->has_gradient || (s->bg_a > 0.0f) ||
+                            (mini_node_get_attribute(n, "style") && strstr(mini_node_get_attribute(n, "style"), "transparent"));
+        int has_custom_border = s->border_set || s->has_border;
+        if (!has_custom_bg && s->bg_a == 0.0f && !s->has_gradient) {
             mini_draw_rect(r, x, y, w, h, 1.0f, 1.0f, 1.0f, 1.0f);
         }
-        if (!s->has_border) {
+        if (!has_custom_border && !s->has_border) {
             mini_draw_rect_stroke(r, x, y, w, h, 1.0f, 0.4f, 0.4f, 0.4f, 0.9f);
         }
         float ax = x + w - 10, ay = y + h / 2;
