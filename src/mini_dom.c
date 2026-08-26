@@ -5786,12 +5786,13 @@ static void layout_node(struct MiniNode *n, float x, float y,
     {
         cw = (s->box_sizing == 1) ? s->w : s->w + ph;
     }
-    /* 3. inline 元素 / 按钮 / flex 中未定宽的子项（flex 行或非 stretch 的 flex 列）：根据文本内容自适应宽度 */
+    /* 3. inline 元素 / 按钮 / flex 中未定宽且无 flex-grow 的子项：根据文本内容自适应宽度 */
     else if (s->display == MINI_DISPLAY_INLINE || (n->tag && !strcmp(n->tag, "button")) ||
              (n->parent &&
               s->position != 2 && s->position != 3 &&
               (n->parent->style.display == MINI_DISPLAY_FLEX || n->parent->style.display == MINI_DISPLAY_INLINE_FLEX) &&
               !n->parent->style.is_grid &&
+              s->flex_grow <= 0.0f &&
               ((n->parent->style.flex_direction == 0) ||
                (n->parent->style.flex_direction == 1 &&
                 (n->parent->style.align_items == 1 || n->parent->style.align_items == 2 || n->parent->style.align_items == 3 ||
