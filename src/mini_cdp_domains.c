@@ -1999,6 +1999,8 @@ static void input_domain(MiniCDP *cdp, int ci, const char *msg, long id, const c
             if (h->doc)
                 mini_dom_restyle((struct MiniDocument *)h->doc);
         }
+        reply_empty(cdp, ci, id);
+        return;
     }
     if (!strcmp(m, "dispatchDragAndDrop") && h && h->events)
     {

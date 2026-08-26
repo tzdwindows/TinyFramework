@@ -1172,10 +1172,16 @@ static void mini_dom_parse_html_legacy(MiniDocument *doc, const char *html)
     }
 }
 
+extern void mini_events_on_node_destroyed(struct MiniEventState *st, struct MiniNode *n);
+extern void mini_bridge_on_node_destroyed(struct MiniNode *n);
+
 void mini_node_destroy(struct MiniNode *n)
 {
     if (!n)
         return;
+    mini_bridge_on_node_destroyed(n);
+    if (g_render_events)
+        mini_events_on_node_destroyed(g_render_events, n);
     /* unlink children recursively */
     struct MiniNode *c = n->first_child;
     while (c)
@@ -7059,44 +7065,13 @@ static void render_text_caret(struct MiniNode *n, MiniRenderer *r,
     if (cx > box_x + box_w - 1)
         cx = box_x + box_w - 1;
 
-    /* In-field selection (Shift+arrows / Ctrl+A in a field): a blue rect
-       between sel_anchor_off and the caret. Not blink-gated. Best-effort
-       single-line rect (covers the common short selection). */
-    if (n->sel_anchor_off >= 0 && n->sel_anchor_off != off)
-    {
-        int a = n->sel_anchor_off;
-        if (a < 0)
-            a = 0;
-        if (a > len)
-            a = len;
-        int b = off;
-        if (a > b)
-        {
-            int t = a;
-            a = b;
-            b = t;
-        }
-        float xa = x0 + caret_measure_prefix(val, a, fs, ls);
-        float xb = x0 + caret_measure_prefix(val, b, fs, ls);
-        if (xa > xb)
-        {
-            float t = xa;
-            xa = xb;
-            xb = t;
-        }
-        if (xa < box_x)
-            xa = box_x;
-        if (xb > box_x + box_w)
-            xb = box_x + box_w;
-        if (xb > xa)
-            mini_draw_rect(r, xa, y0, xb - xa, fs,
-                           0.10f, 0.45f, 0.96f, 0.5f);
-    }
-
     /* ~0.53s on/off blink (1.9 cycles/sec -> half-cycle ~0.526s) */
     if (((int)(g_anim_time * 1.9) & 1))
         return; /* off phase */
-    mini_draw_rect(r, cx, y0, 1.5f, fs, 0.05f, 0.05f, 0.05f, 1.0f);
+    float cr = (s->color_set && (s->color_r > 0.05f || s->color_g > 0.05f || s->color_b > 0.05f)) ? s->color_r : 0.95f;
+    float cg = (s->color_set && (s->color_r > 0.05f || s->color_g > 0.05f || s->color_b > 0.05f)) ? s->color_g : 0.95f;
+    float cb = (s->color_set && (s->color_r > 0.05f || s->color_g > 0.05f || s->color_b > 0.05f)) ? s->color_b : 0.95f;
+    mini_draw_rect(r, cx, y0 - 1.0f, 1.8f, fs + 2.0f, cr, cg, cb, 1.0f);
 }
 
 /* Paint the page-text selection highlight for a text node: a blue rect per
@@ -7107,7 +7082,7 @@ static void render_text_selection(struct MiniNode *n, MiniRenderer *r,
                                   float wrap_w, float fs, float ls,
                                   float lh, int align)
 {
-    if (!g_render_events || !src || !*src)
+    if (!g_render_events || !src || !*src || is_all_ws(src))
         return;
     int lo, hi;
     if (!mini_events_node_selection_range(g_render_events, n, &lo, &hi))
@@ -7116,6 +7091,7 @@ static void render_text_selection(struct MiniNode *n, MiniRenderer *r,
     float ws[64];
     int nl = mini_text_break_lines(src, wrap_w, fs, ls, starts, ends, ws, 64);
     float pen_y = 0.0f;
+    float radii[4] = {2.0f, 2.0f, 2.0f, 2.0f};
     for (int i = 0; i < nl; i++)
     {
         int ls2 = starts[i], le = ends[i];
@@ -7135,8 +7111,8 @@ static void render_text_selection(struct MiniNode *n, MiniRenderer *r,
             float xb = draw_x + align_off +
                        caret_measure_prefix(src + ls2, b - ls2, fs, ls);
             if (xb > xa)
-                mini_draw_rect(r, xa, draw_y + pen_y, xb - xa, lh,
-                               0.10f, 0.45f, 0.96f, 0.5f);
+                mini_draw_rect_rounded_corners(r, xa, draw_y + pen_y, xb - xa, lh, radii,
+                                               0.20f, 0.45f, 0.90f, 0.45f);
         }
         pen_y += lh;
     }
@@ -7178,12 +7154,22 @@ static void render_input(struct MiniNode *n, MiniRenderer *r)
     }
     if (!strcmp(type, "radio"))
     {
-        float sz = h < 18 ? h : 18;
-        float cxp = x + sz / 2, cyp = y + h / 2;
-        mini_draw_circle(r, cxp, cyp, sz / 2, 0.4f, 0.4f, 0.4f, 1.0f);
-        mini_draw_circle(r, cxp, cyp, sz / 2 - 2, 1.0f, 1.0f, 1.0f, 1.0f);
-        if (mini_node_get_attribute(n, "checked") != NULL)
-            mini_draw_circle(r, cxp, cyp, sz / 5, 0.2f, 0.5f, 0.85f, 1.0f);
+        float sz = (w > 0 && w < 24) ? w : (h > 0 && h < 24 ? h : 16.0f);
+        if (sz < 14.0f)
+            sz = 16.0f;
+        float oy = y + (h > sz ? (h - sz) * 0.5f : 0.0f);
+        float cx = x + sz * 0.5f, cy = oy + sz * 0.5f, rad = sz * 0.5f;
+        int is_checked = (mini_node_get_attribute(n, "checked") != NULL);
+        if (is_checked)
+        {
+            mini_draw_circle(r, cx, cy, rad, 0.20f, 0.50f, 0.90f, 1.0f);
+            mini_draw_circle(r, cx, cy, rad * 0.45f, 1.0f, 1.0f, 1.0f, 1.0f);
+        }
+        else
+        {
+            mini_draw_circle(r, cx, cy, rad, 0.40f, 0.40f, 0.40f, 1.0f);
+            mini_draw_circle(r, cx, cy, rad - 1.2f, 0.15f, 0.15f, 0.18f, 1.0f);
+        }
         return;
     }
     if (!strcmp(type, "range"))
@@ -7257,6 +7243,33 @@ static void render_input(struct MiniNode *n, MiniRenderer *r)
     }
     const char *val = mini_node_get_attribute(n, "value");
     float fs = s->font_size > 0.0f ? s->font_size : 12.0f;
+
+    /* In-field selection highlight */
+    if (n->state_focused && n->sel_anchor_off >= 0 && n->sel_anchor_off != n->caret_offset && val && val[0])
+    {
+        int len = (int)strlen(val);
+        float ls = s->letter_set ? s->len_letter.v : 0.0f;
+        int a = n->sel_anchor_off;
+        if (a < 0) a = 0;
+        if (a > len) a = len;
+        int b = n->caret_offset;
+        if (b < 0) b = 0;
+        if (b > len) b = len;
+        if (a > b) { int t = a; a = b; b = t; }
+        float xa = x + 5 + caret_measure_prefix(val, a, fs, ls);
+        float xb = x + 5 + caret_measure_prefix(val, b, fs, ls);
+        if (xa > xb) { float t = xa; xa = xb; xb = t; }
+        if (xa < x + 1) xa = x + 1;
+        if (xb > x + w - 1) xb = x + w - 1;
+        if (xb > xa)
+        {
+            float sel_pad = 2.0f;
+            float radii_sel[4] = {3.0f, 3.0f, 3.0f, 3.0f};
+            mini_draw_rect_rounded_corners(r, xa, y + (h - fs) / 2 - sel_pad, xb - xa, fs + sel_pad * 2.0f, radii_sel,
+                                           0.20f, 0.45f, 0.90f, 0.45f);
+        }
+    }
+
     if (val && val[0])
     {
         const char *disp = !strcmp(type, "password") ? "........" : val;
@@ -13749,6 +13762,166 @@ void mini_dom_outer_html(const struct MiniNode *n, int inner,
    the node dirty so the next tick_frame relays out the change. The parser
    appends to doc->body, so we parse into a transient document and move
    body's children into n (a fragment-style reparent).                    */
+static void mini_dom_parse_fragment_into_node(struct MiniNode *parent, const char *html)
+{
+    if (!parent || !html)
+        return;
+    struct MiniNode *stack[64];
+    int sp = 0;
+    stack[sp++] = parent;
+    const char *p = html;
+
+    while (*p)
+    {
+        if (p[0] == '<' && p[1] == '!')
+        {
+            if (!strncmp(p, "<!--", 4))
+            {
+                const char *data = p + 4;
+                const char *e = strstr(p, "-->");
+                size_t len = e ? (size_t)(e - data) : strlen(data);
+                struct MiniNode *c = mini_node_create_comment_n(data, len);
+                if (c)
+                    mini_node_append_child(stack[sp - 1], c);
+                p = e ? e + 3 : p + strlen(p);
+            }
+            else
+            {
+                const char *e = strchr(p, '>');
+                p = e ? e + 1 : p + strlen(p);
+            }
+            continue;
+        }
+        if (p[0] == '<' && p[1] == '/')
+        {
+            p += 2;
+            char tag[32];
+            int ti = 0;
+            while (*p && *p != '>' && !isspace((unsigned char)*p) && ti < 31)
+                tag[ti++] = (char)tolower((unsigned char)*p++);
+            tag[ti] = 0;
+            if (tag_is_rawtext(tag))
+            {
+                while (*p && *p != '>')
+                    p++;
+                if (*p == '>')
+                    p++;
+                continue;
+            }
+            while (*p && *p != '>')
+                p++;
+            if (*p == '>')
+                p++;
+            if (sp > 1 && !strcmp(stack[sp - 1]->tag, tag))
+                sp--;
+            continue;
+        }
+        if (p[0] == '<')
+        {
+            p++;
+            char tag[32];
+            int ti = 0;
+            while (*p && *p != '>' && *p != '/' && !isspace((unsigned char)*p) && ti < 31)
+                tag[ti++] = (char)tolower((unsigned char)*p++);
+            tag[ti] = 0;
+            if (!tag[0])
+                continue;
+            struct MiniNode *n = mini_node_create_element(tag);
+            while (*p && *p != '>' && *p != '/')
+            {
+                while (*p && isspace((unsigned char)*p))
+                    p++;
+                if (!*p || *p == '>' || *p == '/')
+                    break;
+                char aname[64];
+                int ai = 0;
+                while (*p && *p != '=' && *p != '>' && *p != '/' && !isspace((unsigned char)*p) && ai < 63)
+                    aname[ai++] = (char)tolower((unsigned char)*p++);
+                aname[ai] = 0;
+                while (*p && isspace((unsigned char)*p))
+                    p++;
+                char *aval = NULL;
+                if (*p == '=')
+                {
+                    p++;
+                    while (*p && isspace((unsigned char)*p))
+                        p++;
+                    if (*p == '"' || *p == '\'')
+                    {
+                        char q = *p++;
+                        const char *vstart = p;
+                        while (*p && *p != q)
+                            p++;
+                        size_t vlen = p - vstart;
+                        aval = (char *)malloc(vlen + 1);
+                        if (aval)
+                        {
+                            size_t dl = decode_entities(vstart, vlen, aval, vlen);
+                            aval[dl] = 0;
+                        }
+                        if (*p == q)
+                            p++;
+                    }
+                    else
+                    {
+                        const char *vstart = p;
+                        while (*p && *p != '>' && *p != '/' && !isspace((unsigned char)*p))
+                            p++;
+                        size_t vlen = p - vstart;
+                        aval = (char *)malloc(vlen + 1);
+                        if (aval)
+                        {
+                            size_t dl = decode_entities(vstart, vlen, aval, vlen);
+                            aval[dl] = 0;
+                        }
+                    }
+                }
+                if (aname[0])
+                    mini_node_set_attribute(n, aname, aval ? aval : "");
+                free(aval);
+            }
+            int self_closing = 0;
+            if (*p == '/')
+            {
+                self_closing = 1;
+                p++;
+            }
+            while (*p && *p != '>')
+                p++;
+            if (*p == '>')
+                p++;
+            if (sp > 0)
+                mini_node_append_child(stack[sp - 1], n);
+            if (!self_closing && !tag_is_void(tag) && sp < 64)
+                stack[sp++] = n;
+            continue;
+        }
+        const char *start = p;
+        while (*p && *p != '<')
+            p++;
+        size_t len = p - start;
+        if (len == 0)
+            continue;
+        char *dbuf = (char *)malloc(len + 1);
+        size_t dl = 0;
+        if (dbuf)
+        {
+            dl = decode_entities(start, len, dbuf, len);
+            dbuf[dl] = 0;
+        }
+        else
+        {
+            dbuf = (char *)start;
+            dl = len;
+        }
+        struct MiniNode *t = mini_node_create_text_n(dbuf, dl);
+        if (dbuf != start)
+            free(dbuf);
+        if (t && sp > 0)
+            mini_node_append_child(stack[sp - 1], t);
+    }
+}
+
 void mini_node_set_inner_html(struct MiniNode *n, const char *html)
 {
     if (!n)
@@ -13765,31 +13938,9 @@ void mini_node_set_inner_html(struct MiniNode *n, const char *html)
     if (html && *html)
     {
         if (strchr(html, '<') == NULL)
-        {
             mini_node_append_child(n, mini_node_create_text(html));
-        }
         else
-        {
-            /* 关键修复：保存当前活动文档指针，避免被临时文档销毁时置 NULL */
-            MiniDocument *saved_doc = g_active_doc;
-            MiniDocument *tmp = mini_doc_create();
-            if (tmp)
-            {
-                mini_dom_parse_html(tmp, html);
-                /* reparent body's children into n */
-                struct MiniNode *k = tmp->body->first_child;
-                while (k)
-                {
-                    struct MiniNode *nx = k->next_sibling;
-                    mini_node_append_child(n, k);
-                    k = nx;
-                }
-                /* detach so mini_doc_destroy frees only root/body shells */
-                tmp->body->first_child = tmp->body->last_child = NULL;
-                mini_doc_destroy(tmp);
-            }
-            g_active_doc = saved_doc; /* 恢复主文档指针 */
-        }
+            mini_dom_parse_fragment_into_node(n, html);
     }
     n->dirty_layout = 1;
     n->dirty_paint = 1;

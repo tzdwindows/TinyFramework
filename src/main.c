@@ -1169,10 +1169,13 @@ MiniResult mini_app_run(MiniApp *app)
     return MINI_OK;
 }
 
+extern void mini_audio_shutdown(void);
+
 void mini_app_destroy(MiniApp *app)
 {
     if (!app)
         return;
+    mini_audio_shutdown();
     /* bridge before events: bridge destroy calls mini_events_remove_listener
        on b->ev, so the event state must outlive the bridge.               */
     if (app->cdp)

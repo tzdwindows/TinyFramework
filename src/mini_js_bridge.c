@@ -1253,6 +1253,46 @@ static void js_el_finalizer(JSRuntime *rt, JSValue val)
 }
 
 /* ---- helpers ---- */
+static MiniBridge *g_active_js_bridge = NULL;
+
+void mini_bridge_on_node_destroyed(struct MiniNode *n)
+{
+    if (!n)
+        return;
+    if (g_active_js_bridge)
+    {
+        MiniBridge *b = g_active_js_bridge;
+        for (int i = 0; i < b->ev_listeners_n; )
+        {
+            JsEvListener *L = b->ev_listeners[i];
+            if (L && (L->handle == NULL || L->handle->target == n))
+            {
+                if (b->ev && L->handle)
+                    mini_events_remove_listener(b->ev, L->handle);
+                JS_FreeValue(b->ctx, L->cb);
+                JS_FreeValue(b->ctx, L->js_target);
+                free(L);
+                for (int j = i; j < b->ev_listeners_n - 1; j++)
+                    b->ev_listeners[j] = b->ev_listeners[j + 1];
+                b->ev_listeners_n--;
+            }
+            else
+            {
+                i++;
+            }
+        }
+    }
+    if (n->js_wrapper)
+    {
+        JSValue *v = (JSValue *)n->js_wrapper;
+        JS_SetOpaque(*v, NULL);
+        if (g_active_js_bridge && g_active_js_bridge->ctx)
+            JS_FreeValue(g_active_js_bridge->ctx, *v);
+        free(v);
+        n->js_wrapper = NULL;
+    }
+}
+
 static MiniBridge *bridge_of(JSContext *ctx)
 {
     return (MiniBridge *)JS_GetContextOpaque(ctx);
@@ -1545,20 +1585,30 @@ static JSValue js_setStyle(JSContext *ctx, JSValueConst tv, int argc, JSValueCon
     const char *v = JS_ToCString(ctx, argv[1]);
     if (n && p && v)
     {
-        mini_style_set_base(n, p, v);
-        mini_style_set(n, p, v);
-        const char *cur = mini_node_get_attribute(n, "style");
-        char new_style[1024];
-        if (cur && cur[0])
-            snprintf(new_style, sizeof(new_style), "%s; %s: %s", cur, p, v);
-        else
-            snprintf(new_style, sizeof(new_style), "%s: %s", p, v);
-        mini_node_set_attribute(n, "style", new_style);
+        /* Convert camelCase to kebab-case if needed */
+        char prop_buf[128];
+        int pi = 0;
+        for (int i = 0; p[i] && pi < (int)sizeof(prop_buf) - 2; i++)
+        {
+            if (p[i] >= 'A' && p[i] <= 'Z')
+            {
+                prop_buf[pi++] = '-';
+                prop_buf[pi++] = (char)(p[i] + ('a' - 'A'));
+            }
+            else
+            {
+                prop_buf[pi++] = p[i];
+            }
+        }
+        prop_buf[pi] = '\0';
+        mini_style_set_base(n, prop_buf, v);
+        mini_style_set(n, prop_buf, v);
+        n->dirty_layout = 1;
         n->dirty_paint = 1;
         if (b->doc)
         {
-            mini_dom_restyle(b->doc);
             b->doc->dirty = 1;
+            b->doc->paint_dirty = 1;
         }
     }
     JS_FreeCString(ctx, p);
@@ -2180,7 +2230,7 @@ static JSValue js_dispatchEvent(JSContext *ctx, JSValueConst tv, int argc, JSVal
     memset(&ev, 0, sizeof ev);
     ev.type = type;
     ev.target = n;
-    ev.ud = (void *)&argv[0]; /* share the caller's event object across listeners */
+    ev.ud = NULL; /* let ev_trampoline safely build event object */
     ev.bubbles = 1;
     /* ensure the event object carries stop/prevent (a plain {type:...} the
        caller built doesn't), so listeners can drive propagation control.
@@ -7519,6 +7569,7 @@ MiniBridge *mini_bridge_create(MiniRenderer *r, MiniDocument *doc)
     MiniBridge *b = (MiniBridge *)calloc(1, sizeof(*b));
     if (!b)
         return NULL;
+    g_active_js_bridge = b;
     b->r = r;
     b->doc = doc;
     b->gl = (MiniGLBridge *)r->gl_state;
@@ -7822,6 +7873,8 @@ void mini_bridge_destroy(MiniBridge *b)
 {
     if (!b)
         return;
+    if (g_active_js_bridge == b)
+        g_active_js_bridge = NULL;
 
     /* 0. Join any in-flight parallel prefetch threads before tearing down —
        they only touch the (mutex-protected) HTTP cache, not the JS runtime,
