@@ -1236,6 +1236,9 @@ typedef struct MiniBridge
     int im_n, im_cap;
     char *doc_url; /* page URL (file:// for local); base for relative imports */
     struct MiniNode *locked_node;
+
+    JSValue **all_wrappers;
+    int all_wrappers_n, all_wrappers_cap;
 } MiniBridge;
 
 /* ES module loader callbacks (defined later; registered in mini_bridge_create so
@@ -1285,9 +1288,17 @@ void mini_bridge_on_node_destroyed(struct MiniNode *n)
     if (n->js_wrapper)
     {
         JSValue *v = (JSValue *)n->js_wrapper;
-        JS_SetOpaque(*v, NULL);
         if (g_active_js_bridge && g_active_js_bridge->ctx)
+        {
+            JS_SetOpaque(*v, NULL);
             JS_FreeValue(g_active_js_bridge->ctx, *v);
+
+            for (int i = 0; i < g_active_js_bridge->all_wrappers_n; i++) {
+                if (g_active_js_bridge->all_wrappers[i] == v) {
+                    g_active_js_bridge->all_wrappers[i] = NULL;
+                }
+            }
+        }
         free(v);
         n->js_wrapper = NULL;
     }
@@ -1300,6 +1311,7 @@ static MiniBridge *bridge_of(JSContext *ctx)
 
 static JSValue wrap_node(JSContext *ctx, struct MiniNode *n, JSClassID cid)
 {
+    MiniBridge *b = bridge_of(ctx);
     if (!n)
         return JS_NULL;
     if (n->js_wrapper)
@@ -1316,6 +1328,17 @@ static JSValue wrap_node(JSContext *ctx, struct MiniNode *n, JSClassID cid)
     {
         *saved = JS_DupValue(ctx, obj);
         n->js_wrapper = saved;
+
+        if (b) {
+            if (b->all_wrappers_n >= b->all_wrappers_cap) {
+                int nc = b->all_wrappers_cap ? b->all_wrappers_cap * 2 : 1024;
+                JSValue **nw = (JSValue **)realloc(b->all_wrappers, nc * sizeof(JSValue *));
+                if (nw) { b->all_wrappers = nw; b->all_wrappers_cap = nc; }
+            }
+            if (b->all_wrappers_n < b->all_wrappers_cap) {
+                b->all_wrappers[b->all_wrappers_n++] = saved;
+            }
+        }
     }
     return obj;
 }
@@ -7912,8 +7935,22 @@ void mini_bridge_destroy(MiniBridge *b)
     b->ev_listeners_n = b->ev_listeners_cap = 0;
 
     /* 4. 核心修复：在释放 Context 之前，彻底解开所有 DOM 节点缓存的 JSValue */
-    if (b->ctx && b->doc && b->doc->root)
-        free_node_wrappers_rec(b->ctx, b->doc->root);
+    for (int i = 0; i < b->all_wrappers_n; i++)
+    {
+        JSValue *v = b->all_wrappers[i];
+        if (v)
+        {
+            struct MiniNode *n = (struct MiniNode *)JS_GetOpaque(*v, b->el_cid);
+            if (n && n->js_wrapper == v)
+                n->js_wrapper = NULL;
+            JS_SetOpaque(*v, NULL);
+            JS_FreeValue(b->ctx, *v);
+            free(v);
+        }
+    }
+    free(b->all_wrappers);
+    b->all_wrappers = NULL;
+    b->all_wrappers_n = b->all_wrappers_cap = 0;
 
     /* 5. 关闭并释放所有活跃的 WebSockets */
     for (int i = 0; i < b->ws_n; i++)
@@ -7965,6 +8002,7 @@ void mini_bridge_destroy(MiniBridge *b)
     }
     if (b->rt)
     {
+        JS_RunGC(b->rt);
         JS_FreeRuntime(b->rt);
         b->rt = NULL;
     }
