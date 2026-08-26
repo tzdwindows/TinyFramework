@@ -2031,30 +2031,44 @@ static void js_inline_event_handler(MiniEventState *st, struct MiniNode *node, M
     JSValue eo = build_js_event(ctx, ev, b);
     JSValue this_val = wrap_node(ctx, node, b->el_cid);
 
-    char fn_src[2048];
+    char fn_src[4096];
     snprintf(fn_src, sizeof(fn_src), "(function(event){ %s })", code);
     JSValue fn = JS_Eval(ctx, fn_src, strlen(fn_src), "<inline-event>", JS_EVAL_TYPE_GLOBAL);
-    if (!JS_IsException(fn) && JS_IsFunction(ctx, fn))
+
+    if (JS_IsException(fn))
+    {
+        JSValue exc = JS_GetException(ctx);
+        const char *s = JS_ToCString(ctx, exc);
+        fprintf(stderr, "\033[31m[内联事件语法错误] %s\n触发代码: %s\033[0m\n", s ? s : "?", code);
+        if (s) JS_FreeCString(ctx, s);
+        JS_FreeValue(ctx, exc);
+    }
+    else if (JS_IsFunction(ctx, fn))
     {
         JSValue ret = JS_Call(ctx, fn, this_val, 1, &eo);
         if (JS_IsException(ret))
         {
             JSValue exc = JS_GetException(ctx);
+            const char *s = JS_ToCString(ctx, exc);
+            fprintf(stderr, "\033[31m[内联事件运行报错] %s\n触发代码: %s\033[0m\n", s ? s : "?", code);
+            if (s) JS_FreeCString(ctx, s);
             JS_FreeValue(ctx, exc);
         }
         JS_FreeValue(ctx, ret);
     }
     JS_FreeValue(ctx, fn);
-    JS_FreeValue(ctx, this_val);
 
     JSValue sv = JS_GetPropertyStr(ctx, eo, "__stop");
     if (JS_ToBool(ctx, sv))
         ev->stopPropagation = 1;
     JS_FreeValue(ctx, sv);
+
     JSValue pv = JS_GetPropertyStr(ctx, eo, "__prevent");
     if (JS_ToBool(ctx, pv))
         ev->preventDefault = 1;
     JS_FreeValue(ctx, pv);
+
+    JS_FreeValue(ctx, this_val);
     JS_FreeValue(ctx, eo);
 }
 
@@ -2544,18 +2558,13 @@ static JSValue js_matches(JSContext *ctx, JSValueConst tv, int argc, JSValueCons
     JSValue r = JS_FALSE;
     if (sel)
     {
-        struct MiniNode *out[256];
-        int c = mini_dom_query_selector_all(b->doc, sel, out, 256);
-        for (int i = 0; i < c; i++)
-            if (out[i] == n)
-            {
-                r = JS_TRUE;
-                break;
-            }
+        if (mini_dom_matches_selector(n, sel))
+            r = JS_TRUE;
         JS_FreeCString(ctx, sel);
     }
     return r;
 }
+
 /* element.closest(sel) — walk this node + ancestors, return the first that
    matches sel (by pointer comparison against querySelectorAll). */
 static JSValue js_closest(JSContext *ctx, JSValueConst tv, int argc, JSValueConst *argv)
@@ -2568,20 +2577,12 @@ static JSValue js_closest(JSContext *ctx, JSValueConst tv, int argc, JSValueCons
     JSValue r = JS_NULL;
     if (sel)
     {
-        struct MiniNode *out[256];
+        /* 核心修复：直接使用底层 O(1) 选择器逐级向上匹配，支持文本节点精准回溯父级 */
         for (struct MiniNode *p = n; p; p = p->parent)
         {
-            if (p->type != MN_ELEMENT_NODE)
+            if (p->type != MN_ELEMENT_NODE && p->type != MN_DOCUMENT_NODE)
                 continue;
-            int c = mini_dom_query_selector_all(b->doc, sel, out, 256);
-            int matched = 0;
-            for (int i = 0; i < c; i++)
-                if (out[i] == p)
-                {
-                    matched = 1;
-                    break;
-                }
-            if (matched)
+            if (mini_dom_matches_selector(p, sel))
             {
                 r = wrap_node(ctx, p, b->el_cid);
                 break;
@@ -2591,6 +2592,7 @@ static JSValue js_closest(JSContext *ctx, JSValueConst tv, int argc, JSValueCons
     }
     return r;
 }
+
 /* element.click() — dispatch a synthetic click (capture/target/bubble + inline onclick). */
 static JSValue js_click(JSContext *ctx, JSValueConst tv, int argc, JSValueConst *argv)
 {
@@ -2841,23 +2843,10 @@ static JSValue js_getElementById(JSContext *ctx, JSValueConst tv, int argc, JSVa
     JSValue ret = JS_NULL;
     if (id)
     {
-        /* walk tree for matching id attribute */
-        struct MiniNode *stack[256];
-        int sp = 0;
-        stack[sp++] = b->doc->body;
-        while (sp)
-        {
-            struct MiniNode *n = stack[--sp];
-            const char *v = mini_node_get_attribute(n, "id");
-            if (v && !strcmp(v, id))
-            {
-                ret = wrap_node(ctx, n, b->el_cid);
-                break;
-            }
-            for (struct MiniNode *c = n->first_child; c; c = c->next_sibling)
-                if (sp < 256)
-                    stack[sp++] = c;
-        }
+        struct MiniNode *m = mini_dom_get_element_by_id(b->doc, id);
+        if (m)
+            ret = wrap_node(ctx, m, b->el_cid);
+
         JS_FreeCString(ctx, id);
     }
     return ret;
@@ -7659,7 +7648,7 @@ MiniBridge *mini_bridge_create(MiniRenderer *r, MiniDocument *doc)
     install_webgl(b->ctx, global);
 
     /* window (plain object) */
-    JSValue win = JS_NewObject(b->ctx);
+    JSValue win = JS_DupValue(b->ctx, global);
     JS_SetPropertyStr(b->ctx, win, "requestAnimationFrame",
                       JS_NewCFunction(b->ctx, (JSCFunction *)js_requestAnimationFrame, "requestAnimationFrame", 1));
     JS_SetPropertyStr(b->ctx, win, "cancelAnimationFrame",
@@ -8421,94 +8410,132 @@ static void eval_scripts(struct MiniNode *n, MiniBridge *b)
         const char *type = mini_node_get_attribute(n, "type");
         const char *src = mini_node_get_attribute(n, "src");
         int is_remote = src && (!strncmp(src, "http://", 7) || !strncmp(src, "https://", 8));
+        int is_local_src = src && src[0] && !is_remote;
 
-        /* <script type="importmap">: parse the JSON map; never eval as JS. */
+        const char *script_text = n->text;
+        if (!script_text && n->first_child && n->first_child->text)
+            script_text = n->first_child->text;
+
         if (type && !strcmp(type, "importmap"))
         {
-            if (n->text)
-                parse_importmap(b, n->text, strlen(n->text));
+            if (script_text)
+                parse_importmap(b, script_text, strlen(script_text));
         }
-        /* <script type="module">: compile + instantiate via the module loader. */
         else if (type && !strcmp(type, "module"))
         {
             if (is_remote)
             {
                 MiniNetRecord rec;
                 memset(&rec, 0, sizeof rec);
-                /* Join any parallel prefetch (parse_importmap warms these), then
-                   mini_net_fetch serves from the HTTP cache when fresh / revalidates. */
                 mini_net_prefetch_await(src);
                 if (mini_net_fetch("GET", src, NULL, NULL, 0, NULL, &rec) == 0 && rec.resp_body)
                 {
                     mini_bridge_eval_module(b, rec.resp_body, rec.resp_body_len, src);
                     mini_net_record_add(&rec);
                 }
-                else
-                {
-                    fprintf(stderr, "[script] failed to load %s\n", src);
-                    mini_net_record_free(&rec);
+            }
+            else if (is_local_src)
+            {
+                const char *fpath = src;
+                if (!strncmp(fpath, "file:///", 8)) fpath += 8;
+                else if (!strncmp(fpath, "file://", 7)) fpath += 7;
+                FILE *fp = fopen(fpath, "rb");
+                if (fp) {
+                    fseek(fp, 0, SEEK_END);
+                    long sz = ftell(fp);
+                    fseek(fp, 0, SEEK_SET);
+                    if (sz > 0) {
+                        char *code = (char *)malloc(sz + 1);
+                        if (code) {
+                            size_t r = fread(code, 1, sz, fp);
+                            code[r] = 0;
+                            mini_bridge_eval_module(b, code, r, src);
+                            free(code);
+                        }
+                    }
+                    fclose(fp);
                 }
             }
-            else if (n->text)
+            else if (script_text)
             {
-                mini_bridge_eval_module(b, n->text, strlen(n->text),
+                mini_bridge_eval_module(b, script_text, strlen(script_text),
                                         b->doc_url ? b->doc_url : "<inline-module>");
             }
         }
-        /* classic script (no type, or a JS MIME): legacy global eval. */
         else if (is_classic_script(type))
         {
             if (is_remote)
             {
-                /* External: mini_net_fetch honors the HTTP cache (fresh serve /
-                   conditional revalidation / 304) and reuses any parallel
-                   prefetch; blocking, so document order is preserved. */
                 MiniNetRecord rec;
                 memset(&rec, 0, sizeof rec);
                 mini_net_prefetch_await(src);
                 if (mini_net_fetch("GET", src, NULL, NULL, 0, NULL, &rec) == 0 && rec.resp_body)
                 {
                     mini_bridge_eval(b, rec.resp_body, rec.resp_body_len, src);
-                    mini_net_record_add(&rec); /* steal into the CDP Network ring */
-                }
-                else
-                {
-                    fprintf(stderr, "[script] failed to load %s\n", src);
-                    mini_net_record_free(&rec);
+                    mini_net_record_add(&rec);
                 }
             }
-            else if (n->text)
+            else if (is_local_src)
             {
-                const char *src = n->text;
-                while (*src && isspace((unsigned char)*src))
-                    src++;
-                if (!strncmp(src, "<!--", 4))
-                {
-                    src += 4;
+                const char *fpath = src;
+                if (!strncmp(fpath, "file:///", 8)) fpath += 8;
+                else if (!strncmp(fpath, "file://", 7)) fpath += 7;
+                FILE *fp = fopen(fpath, "rb");
+                if (fp) {
+                    fseek(fp, 0, SEEK_END);
+                    long sz = ftell(fp);
+                    fseek(fp, 0, SEEK_SET);
+                    if (sz > 0) {
+                        char *code = (char *)malloc(sz + 1);
+                        if (code) {
+                            size_t r = fread(code, 1, sz, fp);
+                            code[r] = 0;
+                            mini_bridge_eval(b, code, r, src);
+                            free(code);
+                        }
+                    }
+                    fclose(fp);
                 }
-                size_t len = strlen(src);
-                while (len > 0 && isspace((unsigned char)src[len - 1]))
+            }
+            else if (script_text)
+            {
+                const char *code_src = script_text;
+                while (*code_src && isspace((unsigned char)*code_src))
+                    code_src++;
+                if (!strncmp(code_src, "<!--", 4))
+                    code_src += 4;
+                size_t len = strlen(code_src);
+                while (len > 0 && isspace((unsigned char)code_src[len - 1]))
                     len--;
-                if (len >= 3 && !strncmp(src + len - 3, "-->", 3))
-                {
+                if (len >= 3 && !strncmp(code_src + len - 3, "-->", 3))
                     len -= 3;
-                }
-                mini_bridge_eval(b, src, len, "<inline-script>");
+
+                mini_bridge_eval(b, code_src, len, "<inline-script>");
             }
         }
-        /* non-JS data block (e.g. type=application/json): skipped, per spec. */
     }
     for (struct MiniNode *c = n->first_child; c; c = c->next_sibling)
         eval_scripts(c, b);
 }
+
 int mini_bridge_load_html(MiniBridge *b, const char *html)
 {
     if (!b || !html)
         return -1;
     mini_dom_parse_html(b->doc, html);
     apply_styles(b->doc->root, b);
-
     eval_scripts(b->doc->root, b);
+
+    /* 核心修复：通过注入 setTimeout 异步 JS 宏来延后派发 DOMContentLoaded！
+       这能完美避开 C 宿主先 load_html 后再设置事件系统导致事件被吞的灾难级时序问题，
+       确保事件一定在下一帧准确拉起 JS 业务生命周期。 */
+    const char *dispatch_script =
+        "setTimeout(function() {"
+        "  var ev = new Event('DOMContentLoaded', {bubbles: true});"
+        "  document.dispatchEvent(ev);"
+        "}, 10);";
+    mini_bridge_eval(b, dispatch_script, strlen(dispatch_script), "<dom-ready-dispatcher>");
+
     return 0;
 }
 

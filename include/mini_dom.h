@@ -581,6 +581,8 @@ extern "C"
       copied verbatim. dst is NUL-terminated; cap is the buffer size.        */
    void mini_text_collapse(const char *src, char *dst, size_t cap, int is_pre);
 
+   MiniNode *mini_dom_get_element_by_id(struct MiniDocument *doc, const char *id);
+
    /* Greedy word-wrap line breaks mirroring draw_text_wrapped_ex: fills
       out_start/out_end (byte offsets into `text`) and out_w (pixel width) per
       line, up to max_lines. Returns the line count. \n forces a break.       */

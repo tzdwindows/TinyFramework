@@ -7576,7 +7576,7 @@ static struct MiniNode *find_node_by_id_rec(struct MiniNode *n, const char *id)
     return NULL;
 }
 
-struct MiniNode *mini_dom_get_element_by_id(struct MiniDocument *doc, const char *id)
+MiniNode *mini_dom_get_element_by_id(struct MiniDocument *doc, const char *id)
 {
     if (!doc || !doc->root || !id)
         return NULL;
