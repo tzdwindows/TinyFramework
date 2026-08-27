@@ -74,6 +74,7 @@ typedef void (*PFN_m_UseProgram)(GLuint);
 typedef void (*PFN_m_GenBuffers)(GLsizei, GLuint *);
 typedef void (*PFN_m_BindBuffer)(GLenum, GLuint);
 typedef void (*PFN_m_BufferData)(GLenum, GLsizeiptr, const void *, GLenum);
+typedef void (*PFN_m_BufferSubData)(GLenum, GLintptr, GLsizeiptr, const void *);
 typedef void (*PFN_m_EnableVA)(GLuint);
 typedef void (*PFN_m_VertexAttribP)(GLuint, GLint, GLenum, GLboolean, GLsizei, const void *);
 typedef void (*PFN_m_DrawArrays)(GLenum, GLint, GLsizei);
@@ -268,6 +269,7 @@ typedef struct MiniGLBridge
     PFN_m_GenBuffers GenBuffers;
     PFN_m_BindBuffer BindBuffer;
     PFN_m_BufferData BufferData;
+    PFN_m_BufferSubData BufferSubData;
     PFN_m_EnableVA EnableVA;
     PFN_m_VertexAttribP VertexAttribP;
     PFN_m_DrawArrays DrawArrays;
@@ -473,6 +475,7 @@ void *mini_gl_bridge_new(void)
     R(GenBuffers, "glGenBuffers");
     R(BindBuffer, "glBindBuffer");
     R(BufferData, "glBufferData");
+    R(BufferSubData, "glBufferSubData");
     R(EnableVA, "glEnableVertexAttribArray");
     R(VertexAttribP, "glVertexAttribPointer");
     R(DrawArrays, "glDrawArrays");
@@ -753,9 +756,10 @@ static const char *mini_js_shim =
     "Object.defineProperty(window, 'scrollY', { configurable: true, get() { return typeof __mini_get_scroll_y === 'function' ? __mini_get_scroll_y() : 0.0; } });\n"
     "Object.defineProperty(window, 'pageXOffset', { configurable: true, get() { return window.scrollX; } });\n"
     "Object.defineProperty(window, 'pageYOffset', { configurable: true, get() { return window.scrollY; } });\n"
-    "Object.defineProperty(globalThis, 'innerWidth', { configurable: true, get() { return window.innerWidth; } });\n"
-    "Object.defineProperty(globalThis, 'innerHeight', { configurable: true, get() { return window.innerHeight; } });\n"
-    "Object.defineProperty(globalThis, 'devicePixelRatio', { configurable: true, get() { return window.devicePixelRatio; } });\n"
+    /* window === globalThis, so the window.innerWidth/innerHeight/devicePixelRatio
+       getters defined above ALREADY live on globalThis. Redefining them here as
+       `return window.innerWidth` recurses forever (window IS globalThis), which
+       crashed Three.js with a stack overflow. Omit them. */
     /* setInterval / clearInterval / setTimeout / clearTimeout are native now
        (stable ids + recurring re-arm), so the old setTimeout-loop shim that
        overrode them is gone — leaving it would re-break cancel. */
@@ -3279,6 +3283,7 @@ static JSValue js_getContext(JSContext *ctx, JSValueConst tv, int argc, JSValueC
            map canvas-local GL coords (bottom-left origin) to the canvas's
            window rect and scissor draws to it. */
         JS_SetPropertyStr(ctx, ret, "_cv", JS_DupValue(ctx, tv));
+        JS_SetPropertyStr(ctx, ret, "canvas", JS_DupValue(ctx, tv));
         /* 2D context defaults */
         JS_SetPropertyStr(ctx, ret, "fillStyle", JS_NewString(ctx, "#000000"));
         JS_SetPropertyStr(ctx, ret, "strokeStyle", JS_NewString(ctx, "#000000"));
@@ -4601,6 +4606,19 @@ static JSValue js_gl_bufferData(JSContext *ctx, JSValueConst tv, int argc, JSVal
     const void *p = js_typed_data(ctx, argv[1], &len);
     if (p && b->gl->BufferData)
         b->gl->BufferData((GLenum)target, (GLsizeiptr)len, p, (GLenum)usage);
+    return JS_UNDEFINED;
+}
+static JSValue js_gl_bufferSubData(JSContext *ctx, JSValueConst tv, int argc, JSValueConst *argv)
+{
+    MiniBridge *b = bridge_of(ctx);
+    if (argc < 3) return JS_UNDEFINED;
+    int32_t target = 0, offset = 0;
+    JS_ToInt32(ctx, &target, argv[0]);
+    JS_ToInt32(ctx, &offset, argv[1]);
+    size_t len = 0;
+    const void *p = js_typed_data(ctx, argv[2], &len);
+    if (p && b && b->gl && b->gl->BufferSubData)
+        b->gl->BufferSubData((GLenum)target, (GLintptr)offset, (GLsizeiptr)len, p);
     return JS_UNDEFINED;
 }
 static JSValue js_gl_enableVA(JSContext *ctx, JSValueConst tv, int argc, JSValueConst *argv)
@@ -6026,6 +6044,33 @@ static JSValue js_gl_uniformMatrix3fv(JSContext *ctx, JSValueConst tv, int argc,
     return JS_UNDEFINED;
 }
 
+/* vertexAttrib value setters — Three.js uses *fv for material attribute
+   defaults in WebGLState.setupVertexAttributes. */
+static JSValue js_gl_vertexAttrib1f(JSContext *ctx, JSValueConst tv, int argc, JSValueConst *argv)
+{ MiniBridge *b=bridge_of(ctx); int32_t i=0; double x=0; if(argc>0)JS_ToInt32(ctx,&i,argv[0]); if(argc>1)JS_ToFloat64(ctx,&x,argv[1]); if(b&&b->gl&&b->gl->VertexAttrib1f)b->gl->VertexAttrib1f((GLuint)i,(GLfloat)x); return JS_UNDEFINED; }
+static JSValue js_gl_vertexAttrib2f(JSContext *ctx, JSValueConst tv, int argc, JSValueConst *argv)
+{ MiniBridge *b=bridge_of(ctx); int32_t i=0; double x=0,y=0; if(argc>0)JS_ToInt32(ctx,&i,argv[0]); if(argc>1)JS_ToFloat64(ctx,&x,argv[1]); if(argc>2)JS_ToFloat64(ctx,&y,argv[2]); if(b&&b->gl&&b->gl->VertexAttrib2f)b->gl->VertexAttrib2f((GLuint)i,(GLfloat)x,(GLfloat)y); return JS_UNDEFINED; }
+static JSValue js_gl_vertexAttrib3f(JSContext *ctx, JSValueConst tv, int argc, JSValueConst *argv)
+{ MiniBridge *b=bridge_of(ctx); int32_t i=0; double x=0,y=0,z=0; if(argc>0)JS_ToInt32(ctx,&i,argv[0]); if(argc>1)JS_ToFloat64(ctx,&x,argv[1]); if(argc>2)JS_ToFloat64(ctx,&y,argv[2]); if(argc>3)JS_ToFloat64(ctx,&z,argv[3]); if(b&&b->gl&&b->gl->VertexAttrib3f)b->gl->VertexAttrib3f((GLuint)i,(GLfloat)x,(GLfloat)y,(GLfloat)z); return JS_UNDEFINED; }
+static JSValue js_gl_vertexAttrib4f(JSContext *ctx, JSValueConst tv, int argc, JSValueConst *argv)
+{ MiniBridge *b=bridge_of(ctx); int32_t i=0; double x=0,y=0,z=0,w=0; if(argc>0)JS_ToInt32(ctx,&i,argv[0]); if(argc>1)JS_ToFloat64(ctx,&x,argv[1]); if(argc>2)JS_ToFloat64(ctx,&y,argv[2]); if(argc>3)JS_ToFloat64(ctx,&z,argv[3]); if(argc>4)JS_ToFloat64(ctx,&w,argv[4]); if(b&&b->gl&&b->gl->VertexAttrib4f)b->gl->VertexAttrib4f((GLuint)i,(GLfloat)x,(GLfloat)y,(GLfloat)z,(GLfloat)w); return JS_UNDEFINED; }
+static JSValue js_gl_vertexAttrib1fv(JSContext *ctx, JSValueConst tv, int argc, JSValueConst *argv)
+{ MiniBridge *b=bridge_of(ctx); if(argc<2)return JS_UNDEFINED; int32_t i=0; JS_ToInt32(ctx,&i,argv[0]); size_t len=0; const GLfloat*p=(const GLfloat*)js_float_data(ctx,argv[1],&len); if(p&&len>=1&&b&&b->gl&&b->gl->VertexAttrib1f)b->gl->VertexAttrib1f((GLuint)i,p[0]); return JS_UNDEFINED; }
+static JSValue js_gl_vertexAttrib2fv(JSContext *ctx, JSValueConst tv, int argc, JSValueConst *argv)
+{ MiniBridge *b=bridge_of(ctx); if(argc<2)return JS_UNDEFINED; int32_t i=0; JS_ToInt32(ctx,&i,argv[0]); size_t len=0; const GLfloat*p=(const GLfloat*)js_float_data(ctx,argv[1],&len); if(p&&len>=2&&b&&b->gl&&b->gl->VertexAttrib2f)b->gl->VertexAttrib2f((GLuint)i,p[0],p[1]); return JS_UNDEFINED; }
+static JSValue js_gl_vertexAttrib3fv(JSContext *ctx, JSValueConst tv, int argc, JSValueConst *argv)
+{ MiniBridge *b=bridge_of(ctx); if(argc<2)return JS_UNDEFINED; int32_t i=0; JS_ToInt32(ctx,&i,argv[0]); size_t len=0; const GLfloat*p=(const GLfloat*)js_float_data(ctx,argv[1],&len); if(p&&len>=3&&b&&b->gl&&b->gl->VertexAttrib3f)b->gl->VertexAttrib3f((GLuint)i,p[0],p[1],p[2]); return JS_UNDEFINED; }
+static JSValue js_gl_vertexAttrib4fv(JSContext *ctx, JSValueConst tv, int argc, JSValueConst *argv)
+{ MiniBridge *b=bridge_of(ctx); if(argc<2)return JS_UNDEFINED; int32_t i=0; JS_ToInt32(ctx,&i,argv[0]); size_t len=0; const GLfloat*p=(const GLfloat*)js_float_data(ctx,argv[1],&len); if(p&&len>=4&&b&&b->gl&&b->gl->VertexAttrib4f)b->gl->VertexAttrib4f((GLuint)i,p[0],p[1],p[2],p[3]); return JS_UNDEFINED; }
+
+/* instanced rendering (GL 3.3+, exposed as WebGL2 native + ANGLE extension). */
+static JSValue js_gl_vertexAttribDivisor(JSContext *ctx, JSValueConst tv, int argc, JSValueConst *argv)
+{ MiniBridge *b=bridge_of(ctx); if(argc<2)return JS_UNDEFINED; int32_t i=0,d=0; JS_ToInt32(ctx,&i,argv[0]); JS_ToInt32(ctx,&d,argv[1]); if(b&&b->gl&&b->gl->VertexAttribDivisor)b->gl->VertexAttribDivisor((GLuint)i,(GLuint)d); return JS_UNDEFINED; }
+static JSValue js_gl_drawArraysInstanced(JSContext *ctx, JSValueConst tv, int argc, JSValueConst *argv)
+{ MiniBridge *b=bridge_of(ctx); if(argc<4)return JS_UNDEFINED; int32_t m=0,f=0,c=0,ic=0; JS_ToInt32(ctx,&m,argv[0]); JS_ToInt32(ctx,&f,argv[1]); JS_ToInt32(ctx,&c,argv[2]); JS_ToInt32(ctx,&ic,argv[3]); if(b&&b->gl&&b->gl->DrawArraysInstanced)b->gl->DrawArraysInstanced((GLenum)m,(GLint)f,(GLsizei)c,(GLsizei)ic); return JS_UNDEFINED; }
+static JSValue js_gl_drawElementsInstanced(JSContext *ctx, JSValueConst tv, int argc, JSValueConst *argv)
+{ MiniBridge *b=bridge_of(ctx); if(argc<5)return JS_UNDEFINED; int32_t m=0,c=0,t=0,ic=0; int64_t off=0; JS_ToInt32(ctx,&m,argv[0]); JS_ToInt32(ctx,&c,argv[1]); JS_ToInt32(ctx,&t,argv[2]); JS_ToInt64(ctx,&off,argv[3]); JS_ToInt32(ctx,&ic,argv[4]); if(b&&b->gl&&b->gl->DrawElementsInstanced)b->gl->DrawElementsInstanced((GLenum)m,(GLsizei)c,(GLenum)t,(const void*)(intptr_t)off,(GLsizei)ic); return JS_UNDEFINED; }
+
 /* query helpers — Three.js probes these at WebGLRenderer construction */
 static JSValue js_gl_getParameter(JSContext *ctx, JSValueConst tv, int argc, JSValueConst *argv)
 {
@@ -6109,6 +6154,25 @@ static JSValue js_gl_getExtension(JSContext *ctx, JSValueConst tv, int argc, JSV
                         JS_SetPropertyStr(ctx, r, "deleteVertexArrayOES", fn);
                     }
                     JS_FreeValue(ctx, proto);
+                }
+                /* ANGLE_instanced_arrays: Three.js (WebGL1 path) calls
+                   ext.vertexAttribDivisorANGLE / draw*InstancedANGLE for
+                   InstancedMesh. Alias the native GL3.3+ instanced entry points
+                   (which live on the context prototype) under the ANGLE names. */
+                if (!strcmp(name, "ANGLE_instanced_arrays"))
+                {
+                    JSValue proto = JS_GetPrototype(ctx, tv);
+                    if (!JS_IsException(proto) && !JS_IsNull(proto))
+                    {
+                        JSValue fn;
+                        fn = JS_GetPropertyStr(ctx, proto, "vertexAttribDivisor");
+                        JS_SetPropertyStr(ctx, r, "vertexAttribDivisorANGLE", fn);
+                        fn = JS_GetPropertyStr(ctx, proto, "drawArraysInstanced");
+                        JS_SetPropertyStr(ctx, r, "drawArraysInstancedANGLE", fn);
+                        fn = JS_GetPropertyStr(ctx, proto, "drawElementsInstanced");
+                        JS_SetPropertyStr(ctx, r, "drawElementsInstancedANGLE", fn);
+                        JS_FreeValue(ctx, proto);
+                    }
                 }
                 break;
             }
@@ -7602,6 +7666,7 @@ static void install_webgl(JSContext *ctx, JSValue global)
     SET(proto, "createBuffer", js_gl_createBuffer, 0);
     SET(proto, "bindBuffer", js_gl_bindBuffer, 2);
     SET(proto, "bufferData", js_gl_bufferData, 3);
+    SET(proto, "bufferSubData", js_gl_bufferSubData, 3);
     SET(proto, "enableVertexAttribArray", js_gl_enableVA, 1);
     SET(proto, "disableVertexAttribArray", js_gl_disableVA, 1);
     SET(proto, "vertexAttribPointer", js_gl_vertexAttribPointer, 6);
@@ -7694,6 +7759,17 @@ static void install_webgl(JSContext *ctx, JSValue global)
     SET(proto, "uniform4iv", js_gl_uniform4iv, 2);
     SET(proto, "uniformMatrix2fv", js_gl_uniformMatrix2fv, 3);
     SET(proto, "uniformMatrix3fv", js_gl_uniformMatrix3fv, 3);
+    SET(proto, "vertexAttrib1f", js_gl_vertexAttrib1f, 2);
+    SET(proto, "vertexAttrib2f", js_gl_vertexAttrib2f, 3);
+    SET(proto, "vertexAttrib3f", js_gl_vertexAttrib3f, 4);
+    SET(proto, "vertexAttrib4f", js_gl_vertexAttrib4f, 5);
+    SET(proto, "vertexAttrib1fv", js_gl_vertexAttrib1fv, 2);
+    SET(proto, "vertexAttrib2fv", js_gl_vertexAttrib2fv, 2);
+    SET(proto, "vertexAttrib3fv", js_gl_vertexAttrib3fv, 2);
+    SET(proto, "vertexAttrib4fv", js_gl_vertexAttrib4fv, 2);
+    SET(proto, "vertexAttribDivisor", js_gl_vertexAttribDivisor, 2);
+    SET(proto, "drawArraysInstanced", js_gl_drawArraysInstanced, 4);
+    SET(proto, "drawElementsInstanced", js_gl_drawElementsInstanced, 5);
 
     JS_SetPropertyStr(ctx, ctor, "prototype", proto);
     JS_SetPropertyStr(ctx, global, "WebGLRenderingContext", ctor);
