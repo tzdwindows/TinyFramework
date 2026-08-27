@@ -79,7 +79,8 @@ $SOURCES = @(
     "src\mini_webgl_ext.c",
     "src\mini_bidi.c",
     "src\mini_shaping.c",
-    "src\mini_audio.c"
+    "src\mini_audio.c",
+    "src\mini_native.c"
 )
 
 # 5. Library Directories (-L) and Libraries (-l)

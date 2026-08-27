@@ -100,6 +100,7 @@ set(CORE_SRC
         src/mini_bidi.c
         src/mini_shaping.c
         src/mini_audio.c
+        src/mini_native.c
 )
 
 # Windows 图标/版本资源文件编译

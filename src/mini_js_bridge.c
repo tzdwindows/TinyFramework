@@ -27,6 +27,7 @@
 #include "mini_websocket.h"
 #include "mini_webgl_ext.h"
 #include "mini_audio.h"
+#include "mini_native.h"
 #include "stb_image.h"
 
 #include <stdlib.h>
@@ -1157,7 +1158,25 @@ static const char *mini_js_shim =
     "  };\n"
     "  window.AudioContext = AudioContext;\n"
     "  window.webkitAudioContext = AudioContext;\n"
-    "})();\n";
+    "})();\n"
+    "/* --- CommonJS require (Electron/Node-style module loading) --- */\n"
+    "(function(){\n"
+    "var __mods=(typeof globalThis.__miniBuiltinModules==='object'&&globalThis.__miniBuiltinModules)||{};\n"
+    "var cache=Object.create(null);\n"
+    "function isAbs(p){return p.charAt(0)==='/'||(p.length>1&&p.charAt(1)===':');}\n"
+    "function dirname(p){var i=p.lastIndexOf('/');return i<0?'.':(i===0?'/':p.slice(0,i));}\n"
+    "function join(a,b){if(!a)return b;if(b.charAt(0)==='/')return b;var c=a.charAt(a.length-1);return c==='/'?a+b:a+'/'+b;}\n"
+    "function normalize(p){var parts=p.split('/');var out=[];for(var i=0;i<parts.length;i++){var s=parts[i];if(s===''||s==='.')continue;if(s==='..'){if(out.length)out.pop();else out.push('..');continue;}out.push(s);}var r=out.join('/');if(p.charAt(0)==='/')r='/'+r;return r;}\n"
+    "function readFile(f){return (typeof __miniReadFileText==='function')?__miniReadFileText(f):null;}\n"
+    "function resolveAs(base,id){var p=isAbs(id)?normalize(id):normalize(join(base,id));var cands=[p+'.js',p,p+'/index.js',p+'/package.json'];for(var i=0;i<cands.length;i++){var s=readFile(cands[i]);if(s)return{file:cands[i],src:s};}var ps=readFile(p+'/package.json');if(ps){try{var m=JSON.parse(ps).main;if(m){var mp=normalize(join(p,m));var c2=[mp+'.js',mp,mp+'/index.js'];for(var k=0;k<c2.length;k++){var ss=readFile(c2[k]);if(ss)return{file:c2[k],src:ss};}}}catch(e){}}return null;}\n"
+    "function requireImpl(id,parent){if(typeof id!=='string')throw new TypeError('require(id) expects a string');var ni=(id.indexOf('node:')===0)?id.slice(5):id;if(__mods[ni])return __mods[ni];var pf=(parent&&parent.filename)?parent.filename:((typeof process!=='undefined'&&process.cwd)?process.cwd():'.');var base=dirname(pf);var r=resolveAs(base,id);if(!r)throw new Error('Cannot find module '+id);var key=r.file;if(cache[key])return cache[key].exports;var module={exports:{}};cache[key]=module;var __dirname=dirname(r.file);var fn=new Function('module','exports','require','__filename','__dirname',r.src+';return module.exports;');fn.call(module.exports,module,module.exports,function(rq){return requireImpl(rq,{filename:r.file});},r.file,__dirname);return module.exports;}\n"
+    "globalThis.require=function(id,parent){return requireImpl(id,parent);};\n"
+    "globalThis.require.resolve=function(id){var pf=(typeof process!=='undefined'&&process.cwd)?process.cwd():'.';var r=resolveAs(dirname(pf),id);return r?r.file:id;};\n"
+    "globalThis.require.cache=cache;\n"
+    "})();\n"
+    "/* async helper: defer a callback with bound args on the next tick (used\n"
+    "   by fs.readFile/writeFile; works around setTimeout not forwarding args). */\n"
+    "globalThis.__miniDefer=function(cb,a){setTimeout(function(){if(typeof cb==='function')cb.apply(null,a);},0);};\n";
 
 /* ================================================================== */
 /* Bridge                                                              */
@@ -1239,6 +1258,14 @@ typedef struct MiniBridge
 
     JSValue **all_wrappers;
     int all_wrappers_n, all_wrappers_cap;
+
+    /* native/OS layer (mini_native.c): CommonJS require built-in module
+       table cache, tracked async child processes, and argv source. */
+    JSValue builtin_mods;          /* __miniBuiltinModules object ref */
+    struct JsChildProc **children; /* live async children, pumped each frame */
+    int children_n, children_cap;
+    char **argv;                  /* main()'s argv (process.argv source) */
+    int argc;
 } MiniBridge;
 
 /* ES module loader callbacks (defined later; registered in mini_bridge_create so
@@ -1307,6 +1334,88 @@ void mini_bridge_on_node_destroyed(struct MiniNode *n)
 static MiniBridge *bridge_of(JSContext *ctx)
 {
     return (MiniBridge *)JS_GetContextOpaque(ctx);
+}
+
+/* ---- native/OS layer accessors (mini_native.c consumes MiniBridge through
+   these so MiniBridge stays opaque outside this translation unit). -------- */
+
+void mini_bridge_set_argv(struct MiniBridge *b, int argc, char **argv)
+{
+    if (!b)
+        return;
+    b->argc = argc;
+    b->argv = argv;
+    /* reflect into process.argv on the already-installed global process */
+    if (b->ctx && !JS_IsUndefined(b->builtin_mods))
+    {
+        JSValue proc = JS_GetPropertyStr(b->ctx, b->builtin_mods, "process");
+        if (!JS_IsException(proc) && !JS_IsNull(proc))
+        {
+            JSValue arr = JS_NewArray(b->ctx);
+            for (int i = 0; i < argc; i++)
+                JS_SetPropertyInt64(b->ctx, arr, (uint32_t)i,
+                                    JS_NewString(b->ctx, argv[i] ? argv[i] : ""));
+            JS_SetPropertyStr(b->ctx, proc, "argv", arr);
+        }
+        JS_FreeValue(b->ctx, proc);
+    }
+}
+
+char **mini_bridge_argv(struct MiniBridge *b, int *argc_out)
+{
+    if (argc_out)
+        *argc_out = b ? b->argc : 0;
+    return b ? b->argv : NULL;
+}
+
+struct MiniRenderer *mini_bridge_renderer(struct MiniBridge *b)
+{
+    return b ? b->r : NULL;
+}
+
+void mini_bridge_set_builtin_mods(struct MiniBridge *b, JSValue mods)
+{
+    if (!b)
+        return;
+    JS_FreeValue(b->ctx, b->builtin_mods); /* no-op on first call (zero value) */
+    b->builtin_mods = mods; /* steal ref */
+}
+
+JSValue mini_bridge_builtin_mods(struct MiniBridge *b)
+{
+    return b ? b->builtin_mods : JS_UNDEFINED;
+}
+
+void mini_bridge_add_child(struct MiniBridge *b, JsChildProc *c)
+{
+    if (!b || !c)
+        return;
+    if (b->children_n >= b->children_cap)
+    {
+        int nc = b->children_cap ? b->children_cap * 2 : 8;
+        JsChildProc **nb = (JsChildProc **)realloc(b->children,
+                                                   (size_t)nc * sizeof(JsChildProc *));
+        if (!nb)
+            return;
+        b->children = nb;
+        b->children_cap = nc;
+    }
+    b->children[b->children_n++] = c;
+}
+
+JsChildProc **mini_bridge_children(struct MiniBridge *b, int *n_out)
+{
+    if (n_out)
+        *n_out = b ? b->children_n : 0;
+    return b ? b->children : NULL;
+}
+
+void mini_bridge_remove_child(struct MiniBridge *b, int idx)
+{
+    if (!b || idx < 0 || idx >= b->children_n)
+        return;
+    /* compact: move last into the hole (order is irrelevant to the pump). */
+    b->children[idx] = b->children[--b->children_n];
 }
 
 static JSValue wrap_node(JSContext *ctx, struct MiniNode *n, JSClassID cid)
@@ -7721,6 +7830,10 @@ MiniBridge *mini_bridge_create(MiniRenderer *r, MiniDocument *doc)
     /* WebGL + 2D context constructors */
     install_webgl(b->ctx, global);
 
+    /* OS/electron-style modules + global process (mini_native.c). Runs
+       before the shim eval so require()/process exist when shim code runs. */
+    install_native(b);
+
     /* window (plain object) */
     JSValue win = JS_DupValue(b->ctx, global);
     JS_SetPropertyStr(b->ctx, win, "requestAnimationFrame",
@@ -7775,7 +7888,7 @@ MiniBridge *mini_bridge_create(MiniRenderer *r, MiniDocument *doc)
     JS_SetPropertyStr(b->ctx, nav, "appName", JS_NewString(b->ctx, "Netscape"));
     JS_SetPropertyStr(b->ctx, nav, "appCodeName", JS_NewString(b->ctx, "Mozilla"));
     JS_SetPropertyStr(b->ctx, nav, "vendor", JS_NewString(b->ctx, "Google Inc."));
-    JS_SetPropertyStr(b->ctx, nav, "platform", JS_NewString(b->ctx, "Win32"));
+    JS_SetPropertyStr(b->ctx, nav, "platform", JS_NewString(b->ctx, mini_navigator_platform()));
     JS_SetPropertyStr(b->ctx, nav, "language", JS_NewString(b->ctx, "en-US"));
     JS_SetPropertyStr(b->ctx, nav, "maxTouchPoints", JS_NewInt32(b->ctx, 0));
     JS_SetPropertyStr(b->ctx, nav, "cookieEnabled", JS_TRUE);
@@ -7981,6 +8094,15 @@ void mini_bridge_destroy(MiniBridge *b)
     b->im_n = b->im_cap = 0;
     free(b->doc_url);
     b->doc_url = NULL;
+
+    /* native layer: release tracked children (handles/buffers via
+       mini_native_destroy), then drop the array + builtin-module ref. */
+    mini_native_destroy(b);
+    free(b->children);
+    b->children = NULL;
+    b->children_n = b->children_cap = 0;
+    JS_FreeValue(b->ctx, b->builtin_mods);
+    b->builtin_mods = JS_UNDEFINED;
 
     /* 7. 排空所有挂起的微任务与 Promise Job，确保 GC 干净 */
     if (b->rt)
@@ -8765,6 +8887,8 @@ void mini_bridge_pump(MiniBridge *b)
     }
     /* 3) service live WebSockets (incoming frames -> onmessage/onclose) */
     bridge_pump_websockets(b);
+    /* 4) drain finished async child processes (child_process.exec/spawn) */
+    bridge_pump_children(b);
 }
 
 int mini_bridge_fire_raf(MiniBridge *b, double time_ms)

@@ -14,6 +14,7 @@
 #include "mini_dom.h"
 #include "mini_events.h"
 #include "mini_js_bridge.h"
+#include "mini_native.h"
 #include "mini_vfs.h"
 #include "mini_cdp.h"
 #include "mini_diag.h"
@@ -1329,6 +1330,12 @@ int main(int argc, char **argv)
                   mini_app_mode() ? "CUSTOM_MINI" : "NATIVE");
         return 1;
     }
+    /* Wire process.argv: pass main()'s argc/argv to the bridge so the global
+       process object exposes them (Electron/Node parity). */
+#if MINI_MODE_CUSTOM
+    if (app->bridge)
+        mini_bridge_set_argv(app->bridge, argc, argv);
+#endif
     apply_app_icon(app, config_icon);
 
     uint16_t cdp_port = 9222;
