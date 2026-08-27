@@ -28,6 +28,7 @@
 #include "mini_webgl_ext.h"
 #include "mini_audio.h"
 #include "mini_native.h"
+#include "mini_worker.h"
 #include "stb_image.h"
 
 #include <stdlib.h>
@@ -143,6 +144,118 @@ typedef void (*PFN_m_Uniform4iv)(GLint, GLsizei, const GLint *);
 typedef void (*PFN_m_UniformMatrix2fv)(GLint, GLsizei, GLboolean, const GLfloat *);
 typedef void (*PFN_m_UniformMatrix3fv)(GLint, GLsizei, GLboolean, const GLfloat *);
 
+/* ---- WebGL2 / GL 3.0+ entry point types ----
+   The vendored <GL/gl.h> is the legacy 1.1 header, so a few GL 3.0+ types
+   need shim typedefs before the PFN declarations below. */
+#ifndef GLbitfield
+typedef unsigned int GLbitfield;
+#endif
+#ifndef GLuint64
+typedef unsigned long long GLuint64;
+#endif
+#ifndef GLsync
+typedef void *GLsync;
+#endif
+typedef void (*PFN_m_DisableVA)(GLuint);          /* glDisableVertexAttribArray */
+typedef void (*PFN_m_Flush)(void);
+typedef void (*PFN_m_Finish)(void);
+typedef GLboolean (*PFN_m_IsBuffer)(GLuint);
+typedef GLboolean (*PFN_m_IsProgram)(GLuint);
+typedef GLboolean (*PFN_m_IsShader)(GLuint);
+typedef GLboolean (*PFN_m_IsTexture)(GLuint);
+typedef GLboolean (*PFN_m_IsFramebuffer)(GLuint);
+typedef GLboolean (*PFN_m_IsRenderbuffer)(GLuint);
+typedef GLboolean (*PFN_m_IsEnabled)(GLenum);
+typedef void (*PFN_m_VertexAttrib1f)(GLuint, GLfloat);
+typedef void (*PFN_m_VertexAttrib2f)(GLuint, GLfloat, GLfloat);
+typedef void (*PFN_m_VertexAttrib3f)(GLuint, GLfloat, GLfloat, GLfloat);
+typedef void (*PFN_m_VertexAttrib4f)(GLuint, GLfloat, GLfloat, GLfloat, GLfloat);
+typedef void (*PFN_m_BlendColor)(GLfloat, GLfloat, GLfloat, GLfloat);
+typedef void (*PFN_m_StencilMaskSeparate)(GLenum, GLuint);
+typedef void (*PFN_m_StencilFuncSeparate)(GLenum, GLenum, GLint, GLuint);
+typedef void (*PFN_m_StencilOpSeparate)(GLenum, GLenum, GLenum, GLenum);
+typedef void (*PFN_m_CopyTexImage2D)(GLenum, GLint, GLenum, GLint, GLint, GLsizei, GLsizei, GLint);
+typedef void (*PFN_m_CopyTexSubImage2D)(GLenum, GLint, GLint, GLint, GLint, GLint, GLsizei, GLsizei);
+typedef void (*PFN_m_TexParameterf)(GLenum, GLenum, GLfloat);
+typedef void (*PFN_m_GetTexParameteriv)(GLenum, GLenum, GLint *);
+typedef void (*PFN_m_GetTexParameterfv)(GLenum, GLenum, GLfloat *);
+typedef void (*PFN_m_GetBufferParameteriv)(GLenum, GLenum, GLint *);
+typedef void (*PFN_m_LineWidth)(GLfloat);
+typedef void (*PFN_m_Hint)(GLenum, GLenum);
+typedef void (*PFN_m_GenVertexArrays)(GLsizei, GLuint *);
+typedef void (*PFN_m_DeleteVertexArrays)(GLsizei, const GLuint *);
+/* Uniform (ui / non-square matrices) */
+typedef void (*PFN_m_Uniform1ui)(GLint, GLuint);
+typedef void (*PFN_m_Uniform2ui)(GLint, GLuint, GLuint);
+typedef void (*PFN_m_Uniform3ui)(GLint, GLuint, GLuint, GLuint);
+typedef void (*PFN_m_Uniform4ui)(GLint, GLuint, GLuint, GLuint, GLuint);
+typedef void (*PFN_m_Uniform1uiv)(GLint, GLsizei, const GLuint *);
+typedef void (*PFN_m_Uniform2uiv)(GLint, GLsizei, const GLuint *);
+typedef void (*PFN_m_Uniform3uiv)(GLint, GLsizei, const GLuint *);
+typedef void (*PFN_m_Uniform4uiv)(GLint, GLsizei, const GLuint *);
+typedef void (*PFN_m_UniformMatrix2x3fv)(GLint, GLsizei, GLboolean, const GLfloat *);
+typedef void (*PFN_m_UniformMatrix3x2fv)(GLint, GLsizei, GLboolean, const GLfloat *);
+typedef void (*PFN_m_UniformMatrix2x4fv)(GLint, GLsizei, GLboolean, const GLfloat *);
+typedef void (*PFN_m_UniformMatrix4x2fv)(GLint, GLsizei, GLboolean, const GLfloat *);
+typedef void (*PFN_m_UniformMatrix3x4fv)(GLint, GLsizei, GLboolean, const GLfloat *);
+typedef void (*PFN_m_UniformMatrix4x3fv)(GLint, GLsizei, GLboolean, const GLfloat *);
+/* UBO */
+typedef void (*PFN_m_UniformBlockBinding)(GLuint, GLuint, GLuint);
+typedef GLuint (*PFN_m_GetUniformBlockIndex)(GLuint, const GLchar *);
+typedef void (*PFN_m_BindBufferBase)(GLenum, GLuint, GLuint);
+typedef void (*PFN_m_BindBufferRange)(GLenum, GLuint, GLuint, GLintptr, GLsizeiptr);
+/* Instanced / range draw */
+typedef void (*PFN_m_DrawArraysInstanced)(GLenum, GLint, GLsizei, GLsizei);
+typedef void (*PFN_m_DrawElementsInstanced)(GLenum, GLsizei, GLenum, const void *, GLsizei);
+typedef void (*PFN_m_DrawRangeElements)(GLenum, GLuint, GLuint, GLsizei, GLenum, const void *);
+typedef void (*PFN_m_VertexAttribDivisor)(GLuint, GLuint);
+/* 3D textures / storage */
+typedef void (*PFN_m_TexImage3D)(GLenum, GLint, GLint, GLsizei, GLsizei, GLsizei, GLint, GLenum, GLenum, const void *);
+typedef void (*PFN_m_TexSubImage3D)(GLenum, GLint, GLint, GLint, GLint, GLsizei, GLsizei, GLsizei, GLenum, GLenum, const void *);
+typedef void (*PFN_m_TexStorage2D)(GLenum, GLsizei, GLenum, GLsizei, GLsizei);
+typedef void (*PFN_m_TexStorage3D)(GLenum, GLsizei, GLenum, GLsizei, GLsizei, GLsizei);
+typedef void (*PFN_m_CopyTexSubImage3D)(GLenum, GLint, GLint, GLint, GLint, GLint, GLint, GLsizei, GLsizei);
+/* FBO blit / invalidate / buffers */
+typedef void (*PFN_m_BlitFramebuffer)(GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLbitfield, GLenum);
+typedef void (*PFN_m_DrawBuffers)(GLsizei, const GLenum *);
+typedef void (*PFN_m_ReadBuffer)(GLenum);
+typedef void (*PFN_m_InvalidateFramebuffer)(GLenum, GLsizei, const GLenum *);
+typedef void (*PFN_m_InvalidateSubFramebuffer)(GLenum, GLint, GLint, GLsizei, GLsizei, GLsizei, const GLenum *);
+/* Integer vertex attribs */
+typedef void (*PFN_m_VertexAttribIPointer)(GLuint, GLint, GLenum, GLsizei, const void *);
+typedef void (*PFN_m_VertexAttribI4ui)(GLuint, GLuint, GLuint, GLuint, GLuint);
+typedef void (*PFN_m_VertexAttribI4i)(GLuint, GLint, GLint, GLint, GLint);
+typedef void (*PFN_m_GetInternalformativ)(GLenum, GLenum, GLenum, GLsizei, GLint *);
+/* Samplers */
+typedef void (*PFN_m_GenSamplers)(GLsizei, GLuint *);
+typedef void (*PFN_m_DeleteSamplers)(GLsizei, const GLuint *);
+typedef void (*PFN_m_BindSampler)(GLuint, GLuint);
+typedef void (*PFN_m_SamplerParameteri)(GLuint, GLenum, GLint);
+typedef void (*PFN_m_SamplerParameterf)(GLuint, GLenum, GLfloat);
+typedef GLboolean (*PFN_m_IsSampler)(GLuint);
+/* Queries */
+typedef void (*PFN_m_GenQueries)(GLsizei, GLuint *);
+typedef void (*PFN_m_DeleteQueries)(GLsizei, const GLuint *);
+typedef void (*PFN_m_BeginQuery)(GLenum, GLuint);
+typedef void (*PFN_m_EndQuery)(GLenum);
+typedef GLboolean (*PFN_m_IsQuery)(GLuint);
+typedef void (*PFN_m_QueryCounter)(GLuint, GLenum);
+/* Transform feedback */
+typedef void (*PFN_m_GenTransformFeedbacks)(GLsizei, GLuint *);
+typedef void (*PFN_m_DeleteTransformFeedbacks)(GLsizei, const GLuint *);
+typedef void (*PFN_m_BindTransformFeedback)(GLenum, GLuint);
+typedef void (*PFN_m_BeginTransformFeedback)(GLenum);
+typedef void (*PFN_m_EndTransformFeedback)(void);
+typedef void (*PFN_m_PauseTransformFeedback)(void);
+typedef void (*PFN_m_ResumeTransformFeedback)(void);
+typedef GLboolean (*PFN_m_IsTransformFeedback)(GLuint);
+/* Sync */
+typedef GLsync (*PFN_m_FenceSync)(GLenum, GLbitfield);
+typedef void (*PFN_m_DeleteSync)(GLsync);
+typedef GLboolean (*PFN_m_IsSync)(GLsync);
+typedef GLenum (*PFN_m_ClientWaitSync)(GLsync, GLbitfield, GLuint64);
+typedef void (*PFN_m_WaitSync)(GLsync, GLbitfield, GLuint64);
+
 typedef struct MiniGLBridge
 {
     PFN_m_CreateShader CreateShader;
@@ -223,6 +336,97 @@ typedef struct MiniGLBridge
     PFN_m_Uniform4iv Uniform4iv;
     PFN_m_UniformMatrix2fv UniformMatrix2fv;
     PFN_m_UniformMatrix3fv UniformMatrix3fv;
+
+    /* ---- WebGL2 / GL 3.0+ pointers ---- */
+    PFN_m_DisableVA DisableVA;
+    PFN_m_Flush Flush;
+    PFN_m_Finish Finish;
+    PFN_m_IsBuffer IsBuffer;
+    PFN_m_IsProgram IsProgram;
+    PFN_m_IsShader IsShader;
+    PFN_m_IsTexture IsTexture;
+    PFN_m_IsFramebuffer IsFramebuffer;
+    PFN_m_IsRenderbuffer IsRenderbuffer;
+    PFN_m_IsEnabled IsEnabled;
+    PFN_m_VertexAttrib1f VertexAttrib1f;
+    PFN_m_VertexAttrib2f VertexAttrib2f;
+    PFN_m_VertexAttrib3f VertexAttrib3f;
+    PFN_m_VertexAttrib4f VertexAttrib4f;
+    PFN_m_BlendColor BlendColor;
+    PFN_m_StencilMaskSeparate StencilMaskSeparate;
+    PFN_m_StencilFuncSeparate StencilFuncSeparate;
+    PFN_m_StencilOpSeparate StencilOpSeparate;
+    PFN_m_CopyTexImage2D CopyTexImage2D;
+    PFN_m_CopyTexSubImage2D CopyTexSubImage2D;
+    PFN_m_TexParameterf TexParameterf;
+    PFN_m_GetTexParameteriv GetTexParameteriv;
+    PFN_m_GetTexParameterfv GetTexParameterfv;
+    PFN_m_GetBufferParameteriv GetBufferParameteriv;
+    PFN_m_LineWidth LineWidth;
+    PFN_m_Hint Hint;
+    PFN_m_GenVertexArrays GenVertexArrays;
+    PFN_m_DeleteVertexArrays DeleteVertexArrays;
+    PFN_m_Uniform1ui Uniform1ui;
+    PFN_m_Uniform2ui Uniform2ui;
+    PFN_m_Uniform3ui Uniform3ui;
+    PFN_m_Uniform4ui Uniform4ui;
+    PFN_m_Uniform1uiv Uniform1uiv;
+    PFN_m_Uniform2uiv Uniform2uiv;
+    PFN_m_Uniform3uiv Uniform3uiv;
+    PFN_m_Uniform4uiv Uniform4uiv;
+    PFN_m_UniformMatrix2x3fv UniformMatrix2x3fv;
+    PFN_m_UniformMatrix3x2fv UniformMatrix3x2fv;
+    PFN_m_UniformMatrix2x4fv UniformMatrix2x4fv;
+    PFN_m_UniformMatrix4x2fv UniformMatrix4x2fv;
+    PFN_m_UniformMatrix3x4fv UniformMatrix3x4fv;
+    PFN_m_UniformMatrix4x3fv UniformMatrix4x3fv;
+    PFN_m_UniformBlockBinding UniformBlockBinding;
+    PFN_m_GetUniformBlockIndex GetUniformBlockIndex;
+    PFN_m_BindBufferBase BindBufferBase;
+    PFN_m_BindBufferRange BindBufferRange;
+    PFN_m_DrawArraysInstanced DrawArraysInstanced;
+    PFN_m_DrawElementsInstanced DrawElementsInstanced;
+    PFN_m_DrawRangeElements DrawRangeElements;
+    PFN_m_VertexAttribDivisor VertexAttribDivisor;
+    PFN_m_TexImage3D TexImage3D;
+    PFN_m_TexSubImage3D TexSubImage3D;
+    PFN_m_TexStorage2D TexStorage2D;
+    PFN_m_TexStorage3D TexStorage3D;
+    PFN_m_CopyTexSubImage3D CopyTexSubImage3D;
+    PFN_m_BlitFramebuffer BlitFramebuffer;
+    PFN_m_DrawBuffers DrawBuffers;
+    PFN_m_ReadBuffer ReadBuffer;
+    PFN_m_InvalidateFramebuffer InvalidateFramebuffer;
+    PFN_m_InvalidateSubFramebuffer InvalidateSubFramebuffer;
+    PFN_m_VertexAttribIPointer VertexAttribIPointer;
+    PFN_m_VertexAttribI4ui VertexAttribI4ui;
+    PFN_m_VertexAttribI4i VertexAttribI4i;
+    PFN_m_GetInternalformativ GetInternalformativ;
+    PFN_m_GenSamplers GenSamplers;
+    PFN_m_DeleteSamplers DeleteSamplers;
+    PFN_m_BindSampler BindSampler;
+    PFN_m_SamplerParameteri SamplerParameteri;
+    PFN_m_SamplerParameterf SamplerParameterf;
+    PFN_m_IsSampler IsSampler;
+    PFN_m_GenQueries GenQueries;
+    PFN_m_DeleteQueries DeleteQueries;
+    PFN_m_BeginQuery BeginQuery;
+    PFN_m_EndQuery EndQuery;
+    PFN_m_IsQuery IsQuery;
+    PFN_m_QueryCounter QueryCounter;
+    PFN_m_GenTransformFeedbacks GenTransformFeedbacks;
+    PFN_m_DeleteTransformFeedbacks DeleteTransformFeedbacks;
+    PFN_m_BindTransformFeedback BindTransformFeedback;
+    PFN_m_BeginTransformFeedback BeginTransformFeedback;
+    PFN_m_EndTransformFeedback EndTransformFeedback;
+    PFN_m_PauseTransformFeedback PauseTransformFeedback;
+    PFN_m_ResumeTransformFeedback ResumeTransformFeedback;
+    PFN_m_IsTransformFeedback IsTransformFeedback;
+    PFN_m_FenceSync FenceSync;
+    PFN_m_DeleteSync DeleteSync;
+    PFN_m_IsSync IsSync;
+    PFN_m_ClientWaitSync ClientWaitSync;
+    PFN_m_WaitSync WaitSync;
 
     /* Track the WebGL program the JS bound so we can restore it before rAF.
        The DOM 2D render runs between bridge_reset_2d and rAF; UseProgram(0)
@@ -337,6 +541,98 @@ void *mini_gl_bridge_new(void)
     R(Uniform4iv, "glUniform4iv");
     R(UniformMatrix2fv, "glUniformMatrix2fv");
     R(UniformMatrix3fv, "glUniformMatrix3fv");
+
+    /* WebGL2 / GL 3.0+ (resolved lazily-safe: glfwGetProcAddress on a 4.3
+       context returns all of these). */
+    R(DisableVA, "glDisableVertexAttribArray");
+    R(Flush, "glFlush");
+    R(Finish, "glFinish");
+    R(IsBuffer, "glIsBuffer");
+    R(IsProgram, "glIsProgram");
+    R(IsShader, "glIsShader");
+    R(IsTexture, "glIsTexture");
+    R(IsFramebuffer, "glIsFramebuffer");
+    R(IsRenderbuffer, "glIsRenderbuffer");
+    R(IsEnabled, "glIsEnabled");
+    R(VertexAttrib1f, "glVertexAttrib1f");
+    R(VertexAttrib2f, "glVertexAttrib2f");
+    R(VertexAttrib3f, "glVertexAttrib3f");
+    R(VertexAttrib4f, "glVertexAttrib4f");
+    R(BlendColor, "glBlendColor");
+    R(StencilMaskSeparate, "glStencilMaskSeparate");
+    R(StencilFuncSeparate, "glStencilFuncSeparate");
+    R(StencilOpSeparate, "glStencilOpSeparate");
+    R(CopyTexImage2D, "glCopyTexImage2D");
+    R(CopyTexSubImage2D, "glCopyTexSubImage2D");
+    R(TexParameterf, "glTexParameterf");
+    R(GetTexParameteriv, "glGetTexParameteriv");
+    R(GetTexParameterfv, "glGetTexParameterfv");
+    R(GetBufferParameteriv, "glGetBufferParameteriv");
+    R(LineWidth, "glLineWidth");
+    R(Hint, "glHint");
+    R(GenVertexArrays, "glGenVertexArrays");
+    R(DeleteVertexArrays, "glDeleteVertexArrays");
+    R(Uniform1ui, "glUniform1ui");
+    R(Uniform2ui, "glUniform2ui");
+    R(Uniform3ui, "glUniform3ui");
+    R(Uniform4ui, "glUniform4ui");
+    R(Uniform1uiv, "glUniform1uiv");
+    R(Uniform2uiv, "glUniform2uiv");
+    R(Uniform3uiv, "glUniform3uiv");
+    R(Uniform4uiv, "glUniform4uiv");
+    R(UniformMatrix2x3fv, "glUniformMatrix2x3fv");
+    R(UniformMatrix3x2fv, "glUniformMatrix3x2fv");
+    R(UniformMatrix2x4fv, "glUniformMatrix2x4fv");
+    R(UniformMatrix4x2fv, "glUniformMatrix4x2fv");
+    R(UniformMatrix3x4fv, "glUniformMatrix3x4fv");
+    R(UniformMatrix4x3fv, "glUniformMatrix4x3fv");
+    R(UniformBlockBinding, "glUniformBlockBinding");
+    R(GetUniformBlockIndex, "glGetUniformBlockIndex");
+    R(BindBufferBase, "glBindBufferBase");
+    R(BindBufferRange, "glBindBufferRange");
+    R(DrawArraysInstanced, "glDrawArraysInstanced");
+    R(DrawElementsInstanced, "glDrawElementsInstanced");
+    R(DrawRangeElements, "glDrawRangeElements");
+    R(VertexAttribDivisor, "glVertexAttribDivisor");
+    R(TexImage3D, "glTexImage3D");
+    R(TexSubImage3D, "glTexSubImage3D");
+    R(TexStorage2D, "glTexStorage2D");
+    R(TexStorage3D, "glTexStorage3D");
+    R(CopyTexSubImage3D, "glCopyTexSubImage3D");
+    R(BlitFramebuffer, "glBlitFramebuffer");
+    R(DrawBuffers, "glDrawBuffers");
+    R(ReadBuffer, "glReadBuffer");
+    R(InvalidateFramebuffer, "glInvalidateFramebuffer");
+    R(InvalidateSubFramebuffer, "glInvalidateSubFramebuffer");
+    R(VertexAttribIPointer, "glVertexAttribIPointer");
+    R(VertexAttribI4ui, "glVertexAttribI4ui");
+    R(VertexAttribI4i, "glVertexAttribI4i");
+    R(GetInternalformativ, "glGetInternalformativ");
+    R(GenSamplers, "glGenSamplers");
+    R(DeleteSamplers, "glDeleteSamplers");
+    R(BindSampler, "glBindSampler");
+    R(SamplerParameteri, "glSamplerParameteri");
+    R(SamplerParameterf, "glSamplerParameterf");
+    R(IsSampler, "glIsSampler");
+    R(GenQueries, "glGenQueries");
+    R(DeleteQueries, "glDeleteQueries");
+    R(BeginQuery, "glBeginQuery");
+    R(EndQuery, "glEndQuery");
+    R(IsQuery, "glIsQuery");
+    R(QueryCounter, "glQueryCounter");
+    R(GenTransformFeedbacks, "glGenTransformFeedbacks");
+    R(DeleteTransformFeedbacks, "glDeleteTransformFeedbacks");
+    R(BindTransformFeedback, "glBindTransformFeedback");
+    R(BeginTransformFeedback, "glBeginTransformFeedback");
+    R(EndTransformFeedback, "glEndTransformFeedback");
+    R(PauseTransformFeedback, "glPauseTransformFeedback");
+    R(ResumeTransformFeedback, "glResumeTransformFeedback");
+    R(IsTransformFeedback, "glIsTransformFeedback");
+    R(FenceSync, "glFenceSync");
+    R(DeleteSync, "glDeleteSync");
+    R(IsSync, "glIsSync");
+    R(ClientWaitSync, "glClientWaitSync");
+    R(WaitSync, "glWaitSync");
 #undef R
     /* Diagnostic: report any critical GL 2.0+ pointers that failed to resolve. */
     int n_null = 0;
@@ -1031,7 +1327,21 @@ static const char *mini_js_shim =
        MeshStandardMaterial lighting underflows to a black cube. */
     "  p.LOW_FLOAT=0x8DF0; p.MEDIUM_FLOAT=0x8DF1; p.HIGH_FLOAT=0x8DF2;\n"
     "  p.LOW_INT=0x8DF4; p.MEDIUM_INT=0x8DF5; p.HIGH_INT=0x8DF6;\n"
-    "  for(var k in p){ WebGLRenderingContext[k] = p[k]; }\n"
+    "  /* ---- WebGL2 constants (queried by Three.js to detect/enable WebGL2) ---- */\n"
+    "  p.READ_FRAMEBUFFER=0x8CA8; p.DRAW_FRAMEBUFFER=0x8CA9; p.MAX_COLOR_ATTACHMENTS=0x8CDF; p.COLOR_ATTACHMENT1=0x8CE1; p.COLOR_ATTACHMENT2=0x8CE2; p.COLOR_ATTACHMENT3=0x8CE3; p.COLOR_ATTACHMENT4=0x8CE4; p.COLOR_ATTACHMENT5=0x8CE5; p.COLOR_ATTACHMENT6=0x8CE6; p.COLOR_ATTACHMENT7=0x8CE7; p.COLOR_ATTACHMENT8=0x8CE8; p.COLOR_ATTACHMENT9=0x8CE9; p.COLOR_ATTACHMENT10=0x8CEA; p.COLOR_ATTACHMENT11=0x8CEB; p.COLOR_ATTACHMENT12=0x8CEC; p.COLOR_ATTACHMENT13=0x8CED; p.COLOR_ATTACHMENT14=0x8CEE; p.COLOR_ATTACHMENT15=0x8CEF;\n"
+    "  p.UNIFORM_BUFFER=0x8A11; p.UNIFORM_BUFFER_BINDING=0x8A28; p.UNIFORM_BUFFER_START=0x8A29; p.UNIFORM_BUFFER_SIZE=0x8A2A; p.MAX_VERTEX_UNIFORM_BLOCKS=0x8A2B; p.MAX_FRAGMENT_UNIFORM_BLOCKS=0x8A2D; p.MAX_COMBINED_UNIFORM_BLOCKS=0x8A2E; p.MAX_UNIFORM_BUFFER_BINDINGS=0x8A2F; p.MAX_UNIFORM_BLOCK_SIZE=0x8A30; p.UNIFORM_BLOCK_BINDING=0x8A43; p.UNIFORM_BLOCK_DATA_SIZE=0x8A44; p.UNIFORM_BLOCK_ACTIVE_UNIFORMS=0x8A42; p.UNIFORM_BLOCK_REFERENCED_BY_VERTEX_SHADER=0x8A47; p.UNIFORM_BLOCK_REFERENCED_BY_FRAGMENT_SHADER=0x8A48; p.INVALID_INDEX=0xFFFFFFFF;\n"
+    "  p.TRANSFORM_FEEDBACK_BUFFER=0x8C8E; p.TRANSFORM_FEEDBACK_BUFFER_BINDING=0x8C8F; p.TRANSFORM_FEEDBACK_BUFFER_START=0x8C84; p.TRANSFORM_FEEDBACK_BUFFER_SIZE=0x8C85; p.TRANSFORM_FEEDBACK_BUFFER_MODE=0x8C7F; p.INTERLEAVED_ATTRIBS=0x8C8C; p.SEPARATE_ATTRIBS=0x8C8D; p.RASTERIZER_DISCARD=0x8C89; p.MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS=0x8C8A; p.MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS=0x8C8B;\n"
+    "  p.TEXTURE_3D=0x806F; p.TEXTURE_BINDING_3D=0x806A; p.MAX_3D_TEXTURE_SIZE=0x8073; p.TEXTURE_WRAP_R=0x8072; p.TEXTURE_2D_ARRAY=0x8C1A; p.TEXTURE_BINDING_2D_ARRAY=0x8C1D; p.MAX_ARRAY_TEXTURE_LAYERS=0x84FF;\n"
+    "  p.SAMPLER_3D=0x8B5F; p.SAMPLER_2D_SHADOW=0x8B62; p.SAMPLER_2D_ARRAY=0x8DC1; p.SAMPLER_2D_ARRAY_SHADOW=0x8DC4; p.SAMPLER_CUBE_SHADOW=0x8DC5; p.INT_SAMPLER_2D=0x8DCA; p.INT_SAMPLER_3D=0x8DCB; p.INT_SAMPLER_CUBE=0x8DCC; p.INT_SAMPLER_2D_ARRAY=0x8DCF; p.UNSIGNED_INT_SAMPLER_2D=0x8DD2; p.UNSIGNED_INT_SAMPLER_3D=0x8DD3; p.UNSIGNED_INT_SAMPLER_CUBE=0x8DD4; p.UNSIGNED_INT_SAMPLER_2D_ARRAY=0x8DD7;\n"
+    "  p.HALF_FLOAT=0x140B; p.RG=0x8227; p.RG_INTEGER=0x8228; p.RED_INTEGER=0x8D94; p.RGB_INTEGER=0x8D98; p.RGBA_INTEGER=0x8D99; p.R8=0x8229; p.RG8=0x822B; p.RGB8=0x8051; p.RGBA8=0x8058; p.R8_SNORM=0x8F94; p.RG8_SNORM=0x8F95; p.RGB8_SNORM=0x8F96; p.RGBA8_SNORM=0x8F97; p.R16F=0x822D; p.RG16F=0x822F; p.RGBA16F=0x881A; p.R32F=0x822E; p.RG32F=0x8230; p.RGBA32F=0x8814; p.R11F_G11F_B10F=0x8C3A; p.RGB9_E5=0x8C3D; p.SRGB8=0x8C41; p.SRGB8_ALPHA8=0x8C43; p.RGB10_A2=0x8059; p.RGB10_A2UI=0x906F;\n"
+    "  p.UNSIGNED_INT_2_10_10_10_REV=0x8368; p.UNSIGNED_INT_10F_11F_11F_REV=0x8C3B; p.UNSIGNED_INT_5_9_9_9_REV=0x8C3E; p.UNSIGNED_INT_24_8=0x84FA; p.FLOAT_32_UNSIGNED_INT_24_8_REV=0x8DAD; p.UNSIGNED_INT_10F_11F_11F_REV=0x8C3B;\n"
+    "  p.ANY_SAMPLES_PASSED=0x8C2F; p.ANY_SAMPLES_PASSED_CONSERVATIVE=0x8D6A; p.TRANSFORM_FEEDBACK=0x8E22; p.TIME_ELAPSED=0x88BF; p.TIMESTAMP=0x8E28;\n"
+    "  p.SYNC_CONDITION=0x9113; p.SYNC_FENCE=0x9117; p.SYNC_FLAGS=0x9115; p.UNSIGNALED=0x9118; p.SIGNALED=0x9119; p.OBJECT_TYPE=0x9112; p.ALREADY_SIGNALED=0x911A; p.CONDITION_SATISFIED=0x911C; p.MAX_SERVER_WAIT_TIMEOUT=0x9111; p.MAX_CLIENT_WAIT_TIMEOUT_WEBGL=0x9148; p.TIMEOUT_IGNORED=-1;\n"
+    "  p.PRIMITIVE_RESTART_FIXED_INDEX=0x8D69; p.MAX_ELEMENT_INDEX=0x8D7B; p.MAX_ELEMENTS_INDICES=0x80E9; p.MAX_ELEMENTS_VERTICES=0x80E8; p.MAX_FRAGMENT_INPUT_COMPONENTS=0x9125; p.MAX_VERTEX_OUTPUT_COMPONENTS=0x9122;\n"
+    "  p.COPY_READ_BUFFER=0x8F36; p.COPY_WRITE_BUFFER=0x8F37; p.UNIFORM_OFFSET=0x8A00; p.UNIFORM_ARRAY_STRIDE=0x8A03; p.UNIFORM_MATRIX_STRIDE=0x8A04; p.UNIFORM_IS_ROW_MAJOR=0x8A40;\n"
+    "  p.MAX_DRAW_BUFFERS=0x8824; p.DRAW_BUFFER0=0x8825; p.DRAW_BUFFER1=0x8826; p.DRAW_BUFFER2=0x8827; p.DRAW_BUFFER3=0x8828; p.DRAW_BUFFER4=0x8829; p.DRAW_BUFFER5=0x882A; p.DRAW_BUFFER6=0x882B; p.DRAW_BUFFER7=0x882C; p.DRAW_BUFFER8=0x882D; p.DRAW_BUFFER9=0x882E; p.DRAW_BUFFER10=0x882F; p.DRAW_BUFFER11=0x8830; p.DRAW_BUFFER12=0x8831; p.DRAW_BUFFER13=0x8832; p.DRAW_BUFFER14=0x8833; p.DRAW_BUFFER15=0x8834;\n"
+    "  p.MIN_PROGRAM_TEXEL_OFFSET=0x8904; p.MAX_PROGRAM_TEXEL_OFFSET=0x8905;\n"
+    "  for(var k in p){ WebGLRenderingContext[k] = p[k]; if(typeof WebGL2RenderingContext!=='undefined') WebGL2RenderingContext[k] = p[k]; }\n"
     "console = {\n"
     "  log(){   __emit.apply(null, ['log'].concat([].slice.call(arguments))); },\n"
     "  info(){  __emit.apply(null, ['info'].concat([].slice.call(arguments))); },\n"
@@ -1266,6 +1576,10 @@ typedef struct MiniBridge
     int children_n, children_cap;
     char **argv;                  /* main()'s argv (process.argv source) */
     int argc;
+
+    /* background I/O worker pool (mini_worker.c): fs.readFile/writeFile +
+       fetch run off the render thread; main thread pumps results here. */
+    MiniWorkerQueue *workers;
 } MiniBridge;
 
 /* ES module loader callbacks (defined later; registered in mini_bridge_create so
@@ -1371,6 +1685,11 @@ char **mini_bridge_argv(struct MiniBridge *b, int *argc_out)
 struct MiniRenderer *mini_bridge_renderer(struct MiniBridge *b)
 {
     return b ? b->r : NULL;
+}
+
+struct MiniWorkerQueue *mini_bridge_workers(struct MiniBridge *b)
+{
+    return b ? b->workers : NULL;
 }
 
 void mini_bridge_set_builtin_mods(struct MiniBridge *b, JSValue mods)
@@ -4291,6 +4610,16 @@ static JSValue js_gl_enableVA(JSContext *ctx, JSValueConst tv, int argc, JSValue
     JS_ToInt32(ctx, &i, argv[0]);
     if (b->gl->EnableVA)
         b->gl->EnableVA((GLuint)i);
+    return JS_UNDEFINED;
+}
+static JSValue js_gl_disableVA(JSContext *ctx, JSValueConst tv, int argc, JSValueConst *argv)
+{
+    MiniBridge *b = bridge_of(ctx);
+    int32_t i = 0;
+    if (argc > 0)
+        JS_ToInt32(ctx, &i, argv[0]);
+    if (b && b->gl && b->gl->DisableVA)
+        b->gl->DisableVA((GLuint)i);
     return JS_UNDEFINED;
 }
 static JSValue js_gl_vertexAttribPointer(JSContext *ctx, JSValueConst tv, int argc, JSValueConst *argv)
@@ -7274,6 +7603,7 @@ static void install_webgl(JSContext *ctx, JSValue global)
     SET(proto, "bindBuffer", js_gl_bindBuffer, 2);
     SET(proto, "bufferData", js_gl_bufferData, 3);
     SET(proto, "enableVertexAttribArray", js_gl_enableVA, 1);
+    SET(proto, "disableVertexAttribArray", js_gl_disableVA, 1);
     SET(proto, "vertexAttribPointer", js_gl_vertexAttribPointer, 6);
     SET(proto, "drawArrays", js_gl_drawArrays, 3);
     SET(proto, "viewport", js_gl_viewport, 4);
@@ -7369,7 +7699,12 @@ static void install_webgl(JSContext *ctx, JSValue global)
     JS_SetPropertyStr(ctx, global, "WebGLRenderingContext", ctor);
 
     JSValue ctor_gl2 = JS_NewCFunction2(ctx, (JSCFunction *)js_illegal_ctor, "WebGL2RenderingContext", 0, JS_CFUNC_constructor, 0);
-    JS_SetPropertyStr(ctx, ctor_gl2, "prototype", JS_DupValue(ctx, proto));
+    /* WebGL2 prototype is a NEW object whose prototype chain points at the
+       WebGL1 prototype, so WebGL2-specific methods/constants attach without
+       leaking onto WebGL1 contexts, while WebGL1 methods are inherited. */
+    JSValue proto2 = JS_NewObject(ctx);
+    JS_SetPrototype(ctx, proto2, proto); /* proto2 inherits all WebGL1 methods */
+    JS_SetPropertyStr(ctx, ctor_gl2, "prototype", proto2); /* steals proto2 */
     JS_SetPropertyStr(ctx, global, "WebGL2RenderingContext", ctor_gl2);
 
     /* 2D context as a lightweight constructor */
@@ -7830,6 +8165,9 @@ MiniBridge *mini_bridge_create(MiniRenderer *r, MiniDocument *doc)
     /* WebGL + 2D context constructors */
     install_webgl(b->ctx, global);
 
+    /* background I/O worker pool (fs.readFile/writeFile + fetch async). */
+    b->workers = mini_worker_init(2);
+
     /* OS/electron-style modules + global process (mini_native.c). Runs
        before the shim eval so require()/process exist when shim code runs. */
     install_native(b);
@@ -8097,6 +8435,8 @@ void mini_bridge_destroy(MiniBridge *b)
 
     /* native layer: release tracked children (handles/buffers via
        mini_native_destroy), then drop the array + builtin-module ref. */
+    mini_worker_destroy(b->workers, b->rt);
+    b->workers = NULL;
     mini_native_destroy(b);
     free(b->children);
     b->children = NULL;
@@ -8889,6 +9229,8 @@ void mini_bridge_pump(MiniBridge *b)
     bridge_pump_websockets(b);
     /* 4) drain finished async child processes (child_process.exec/spawn) */
     bridge_pump_children(b);
+    /* 5) drain background worker results (fs.readFile/writeFile + fetch) */
+    mini_worker_pump(b->workers, b->ctx);
 }
 
 int mini_bridge_fire_raf(MiniBridge *b, double time_ms)

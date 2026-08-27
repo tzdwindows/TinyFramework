@@ -88,6 +88,10 @@ char **mini_bridge_argv(struct MiniBridge *b, int *argc_out);
 /* Renderer handle (for window operations: app.quit, BrowserWindow, dialog). */
 struct MiniRenderer *mini_bridge_renderer(struct MiniBridge *b);
 
+/* Background worker pool (mini_worker.c) for async fs/fetch. */
+struct MiniWorkerQueue;
+struct MiniWorkerQueue *mini_bridge_workers(struct MiniBridge *b);
+
 /* Built-in module table object (__miniBuiltinModules). install_native sets it
    so mini_bridge_set_argv can reach the process object later. */
 void     mini_bridge_set_builtin_mods(struct MiniBridge *b, JSValue mods);

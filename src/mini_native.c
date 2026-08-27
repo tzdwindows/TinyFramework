@@ -15,6 +15,7 @@
 #include "mini_native.h"
 #include "mini_js_bridge.h"
 #include "mini_renderer.h"
+#include "mini_worker.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -1326,24 +1327,21 @@ static JSValue js_fs_readFile(JSContext *ctx, JSValueConst tv, int argc, JSValue
         JS_FreeValue(ctx, cb);
         return JS_ThrowTypeError(ctx, "readFile(path[, opts], cb) expected a callback");
     }
-    /* synchronous read, then defer callback(err, data) */
-    JSValue data = js_fs_readFileSync(ctx, JS_NULL, 1, argv);
-    JSValue args[2];
-    if (JS_IsException(data))
+    const char *path = JS_IsString(argv[0]) ? JS_ToCString(ctx, argv[0]) : NULL;
+    if (!path)
     {
-        JSValue ex = JS_GetException(ctx);
-        args[0] = ex;
-        args[1] = JS_UNDEFINED;
+        JS_FreeValue(ctx, cb);
+        return JS_ThrowTypeError(ctx, "readFile: path must be a string");
     }
-    else
-    {
-        args[0] = JS_NULL;
-        args[1] = data;
-    }
-    defer_callback(ctx, cb, 2, args);
-    JS_FreeValue(ctx, args[0]);
-    JS_FreeValue(ctx, args[1]);
-    JS_FreeValue(ctx, cb);
+    /* Real async: the worker thread does fopen/fread off the render thread;
+       the main-thread pump wraps the buffer into a JSValue and fires cb. */
+    MiniWorkerTask task;
+    memset(&task, 0, sizeof task);
+    task.kind = MW_FS_READ;
+    task.path = strdup(path);
+    task.cb = cb; /* queue owns the DupValue'd ref */
+    JS_FreeCString(ctx, path);
+    mini_worker_submit(mini_bridge_workers(nb_of(ctx)), &task);
     return JS_UNDEFINED;
 }
 
@@ -1358,25 +1356,48 @@ static JSValue js_fs_writeFile(JSContext *ctx, JSValueConst tv, int argc, JSValu
         JS_FreeValue(ctx, cb);
         return JS_ThrowTypeError(ctx, "writeFile(path, data[, opts], cb) expected a callback");
     }
-    JSValue w = js_fs_writeFileSync(ctx, JS_NULL, 2, argv);
-    JSValue args[2];
-    if (JS_IsException(w))
+    const char *path = JS_IsString(argv[0]) ? JS_ToCString(ctx, argv[0]) : NULL;
+    if (!path)
     {
-        args[0] = JS_GetException(ctx);
-        args[1] = JS_UNDEFINED;
+        JS_FreeValue(ctx, cb);
+        return JS_ThrowTypeError(ctx, "writeFile: path must be a string");
     }
+    /* copy data out of JS into a worker-owned buffer (string or ArrayBuffer) */
+    const char *src = NULL;
+    size_t slen = 0;
+    int isbuf = 0;
+    if (JS_IsString(argv[1]))
+        src = JS_ToCStringLen(ctx, &slen, argv[1]);
     else
     {
-        args[0] = JS_NULL;
-        args[1] = JS_UNDEFINED;
+        size_t sz = 0;
+        void *ab = JS_GetArrayBuffer(ctx, &sz, argv[1]);
+        if (ab) { src = (const char *)ab; slen = sz; isbuf = 1; }
     }
-    JS_FreeValue(ctx, w);
-    defer_callback(ctx, cb, 2, args);
-    JS_FreeValue(ctx, args[0]);
-    JS_FreeValue(ctx, args[1]);
-    JS_FreeValue(ctx, cb);
+    if (!src)
+    {
+        JS_FreeCString(ctx, path);
+        JS_FreeValue(ctx, cb);
+        return JS_ThrowTypeError(ctx, "writeFile: data must be a string or ArrayBuffer");
+    }
+    char *data_copy = (char *)malloc(slen ? slen : 1);
+    if (data_copy)
+        memcpy(data_copy, src, slen);
+    if (!isbuf)
+        JS_FreeCString(ctx, src);
+
+    MiniWorkerTask task;
+    memset(&task, 0, sizeof task);
+    task.kind = MW_FS_WRITE;
+    task.path = strdup(path);
+    task.data = data_copy;
+    task.data_len = slen;
+    task.cb = cb;
+    JS_FreeCString(ctx, path);
+    mini_worker_submit(mini_bridge_workers(nb_of(ctx)), &task);
     return JS_UNDEFINED;
 }
+
 
 static void install_fs(JSContext *ctx, JSValue mods)
 {
