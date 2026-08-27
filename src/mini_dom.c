@@ -3525,11 +3525,29 @@ void mini_style_set(struct MiniNode *n, const char *prop, const char *val)
                     }
                     else if (!strncmp(p, "translateX(", 11))
                     {
-                        dx = to_px(p + 11);
+                        if (strchr(p + 11, '%'))
+                        {
+                            s->translate_x_is_pct = 1;
+                            s->translate_x_pct = (float)atof(p + 11) / 100.0f;
+                            dx = s->translate_x_pct * (s->w > 0.0f ? s->w : 0.0f);
+                        }
+                        else
+                        {
+                            dx = to_px(p + 11);
+                        }
                     }
                     else if (!strncmp(p, "translateY(", 11))
                     {
-                        dy = to_px(p + 11);
+                        if (strchr(p + 11, '%'))
+                        {
+                            s->translate_y_is_pct = 1;
+                            s->translate_y_pct = (float)atof(p + 11) / 100.0f;
+                            dy = s->translate_y_pct * (s->h > 0.0f ? s->h : 0.0f);
+                        }
+                        else
+                        {
+                            dy = to_px(p + 11);
+                        }
                     }
                     else if (!strncmp(p, "translate(", 10))
                     {
@@ -3544,9 +3562,31 @@ void mini_style_set(struct MiniNode *n, const char *prop, const char *val)
                         char *tx = strtok_r(tmp, ",", &save);
                         char *ty = strtok_r(NULL, ",", &save);
                         if (tx)
-                            dx = to_px(tx);
+                        {
+                            if (strchr(tx, '%'))
+                            {
+                                s->translate_x_is_pct = 1;
+                                s->translate_x_pct = (float)atof(tx) / 100.0f;
+                                dx = s->translate_x_pct * (s->w > 0.0f ? s->w : 0.0f);
+                            }
+                            else
+                            {
+                                dx = to_px(tx);
+                            }
+                        }
                         if (ty)
-                            dy = to_px(ty);
+                        {
+                            if (strchr(ty, '%'))
+                            {
+                                s->translate_y_is_pct = 1;
+                                s->translate_y_pct = (float)atof(ty) / 100.0f;
+                                dy = s->translate_y_pct * (s->h > 0.0f ? s->h : 0.0f);
+                            }
+                            else
+                            {
+                                dy = to_px(ty);
+                            }
+                        }
                     }
 
                     float rx = s->rotate_x, ry = s->rotate_y, rz = s->rotate_z;
@@ -5412,7 +5452,7 @@ static float measure_node_intrinsic_w(const struct MiniNode *n, float font_size,
     }
     if (n->type != MN_ELEMENT_NODE && n->type != MN_DOCUMENT_FRAGMENT_NODE)
         return 0.0f;
-    if (n->style.display == MINI_DISPLAY_NONE || n->style.position == 2 || n->style.position == 3)
+    if (n->style.display == MINI_DISPLAY_NONE)
         return 0.0f;
 
     const MiniStyle *s = &n->style;
@@ -5853,18 +5893,19 @@ static void layout_node(struct MiniNode *n, float x, float y,
     {
         cw = (s->box_sizing == 1) ? s->w : s->w + ph;
     }
-    /* 3. inline 元素 / 按钮 / inline-flex / flex-row 中未定宽且无 flex-grow 的子项：根据内容自适应宽度 */
-    else if (s->display == MINI_DISPLAY_INLINE || s->display == MINI_DISPLAY_INLINE_FLEX ||
-             (n->tag && !strcmp(n->tag, "button")) ||
-             (n->parent &&
-              s->position != 2 && s->position != 3 &&
-              (n->parent->style.display == MINI_DISPLAY_FLEX || n->parent->style.display == MINI_DISPLAY_INLINE_FLEX) &&
-              !n->parent->style.is_grid &&
-              s->flex_grow <= 0.0f &&
-              ((n->parent->style.flex_direction == 0 || n->parent->style.flex_direction == 2) ||
-               ((n->parent->style.flex_direction == 1 || n->parent->style.flex_direction == 3) &&
-                (n->parent->style.align_items == 1 || n->parent->style.align_items == 2 || n->parent->style.align_items == 3 ||
-                 s->align_self == 1 || s->align_self == 2 || s->align_self == 3)))))
+    /* 3. inline 元素 / 按钮 / inline-flex / 绝对定位未定宽自适应 / flex-row 中未定宽且无 flex-grow 的子项：根据内容自适应宽度 */
+    else if (s->flex_grow <= 0.0f &&
+             (s->display == MINI_DISPLAY_INLINE || s->display == MINI_DISPLAY_INLINE_FLEX ||
+              (n->tag && !strcmp(n->tag, "button")) ||
+              ((s->position == 2 || s->position == 3) && !(s->len_left.unit != 0 && s->len_right.unit != 0)) ||
+              (n->parent &&
+               s->position != 2 && s->position != 3 &&
+               (n->parent->style.display == MINI_DISPLAY_FLEX || n->parent->style.display == MINI_DISPLAY_INLINE_FLEX) &&
+               !n->parent->style.is_grid &&
+               ((n->parent->style.flex_direction == 0 || n->parent->style.flex_direction == 2) ||
+                ((n->parent->style.flex_direction == 1 || n->parent->style.flex_direction == 3) &&
+                 (n->parent->style.align_items == 1 || n->parent->style.align_items == 2 || n->parent->style.align_items == 3 ||
+                  s->align_self == 1 || s->align_self == 2 || s->align_self == 3))))))
     {
         float fs = s->font_size > 0.0f ? s->font_size : 16.0f;
         float iw = measure_node_intrinsic_w(n, fs, s->len_letter.v);
@@ -6810,6 +6851,10 @@ static void layout_node(struct MiniNode *n, float x, float y,
     }
     s->w = cw;
     s->h = ch;
+    if (s->translate_x_is_pct)
+        s->translate_x = s->translate_x_pct * s->w;
+    if (s->translate_y_is_pct)
+        s->translate_y = s->translate_y_pct * s->h;
     s->laid_out = 1;
 }
 
@@ -9831,29 +9876,6 @@ static void render_node(struct MiniNode *n, MiniRenderer *r)
             int align = p ? (p->style.text_align ? p->style.text_align : n->style.text_align) : n->style.text_align;
             float wrap_w = (n->style.w > 0.0f) ? n->style.w : 10000.0f;
 
-            if (p && (p->style.display == MINI_DISPLAY_FLEX || p->style.display == MINI_DISPLAY_INLINE_FLEX || p->style.display == MINI_DISPLAY_INLINE))
-            {
-                align = 0; /* Flex / Inline 节点已有精准绝对坐标，严禁二次渲染偏移 */
-            }
-            else if (align != 0 && p && p->style.w > 0.0f)
-            {
-                wrap_w = p->style.w - p->style.padding[1] - p->style.padding[3];
-                if (wrap_w < 0.0f)
-                    wrap_w = 0.0f;
-                draw_x = p->style.abs_x + p->style.padding[3];
-            }
-
-            if (draw_x == 0.0f && draw_y == 0.0f && p)
-            {
-                draw_x = p->style.abs_x + p->style.padding[3];
-                draw_y = p->style.abs_y + p->style.padding[0];
-            }
-
-            if (src_text && !strcmp(src_text, "“"))
-            {
-                draw_y -= fs * 0.35f;
-            }
-
             float ls = p ? (p->style.letter_set ? p->style.len_letter.v : 0.0f) : (n->style.letter_set ? n->style.len_letter.v : 0.0f);
             float lh = mini_text_line_height(fs);
             if (p && p->style.line_height_set)
@@ -9866,6 +9888,42 @@ static void render_node(struct MiniNode *n, MiniRenderer *r)
                 {
                     lh = p->style.len_line_height.v;
                 }
+            }
+
+            int is_btn = (p && p->tag && !strcmp(p->tag, "button"));
+            if (is_btn)
+            {
+                align = (p->style.text_align != 0) ? p->style.text_align : 1; /* Center button text */
+                wrap_w = p->style.w - p->style.padding[1] - p->style.padding[3];
+                if (wrap_w < 0.0f) wrap_w = 0.0f;
+                draw_x = p->style.abs_x + p->style.padding[3];
+                float content_h = p->style.h - p->style.padding[0] - p->style.padding[2];
+                if (content_h > lh)
+                    draw_y = p->style.abs_y + p->style.padding[0] + (content_h - lh) * 0.5f;
+                else
+                    draw_y = p->style.abs_y + p->style.padding[0];
+            }
+            else if (p && (p->style.display == MINI_DISPLAY_FLEX || p->style.display == MINI_DISPLAY_INLINE_FLEX || p->style.display == MINI_DISPLAY_INLINE))
+            {
+                align = 0; /* Flex / Inline 节点已有精准绝对坐标，严禁二次渲染偏移 */
+            }
+            else if (align != 0 && p && p->style.w > 0.0f)
+            {
+                wrap_w = p->style.w - p->style.padding[1] - p->style.padding[3];
+                if (wrap_w < 0.0f)
+                    wrap_w = 0.0f;
+                draw_x = p->style.abs_x + p->style.padding[3];
+            }
+
+            if (!is_btn && draw_x == 0.0f && draw_y == 0.0f && p)
+            {
+                draw_x = p->style.abs_x + p->style.padding[3];
+                draw_y = p->style.abs_y + p->style.padding[0];
+            }
+
+            if (src_text && !strcmp(src_text, "“"))
+            {
+                draw_y -= fs * 0.35f;
             }
 
             int fw = p ? (p->style.font_weight > 0 ? p->style.font_weight : 400) : (n->style.font_weight > 0 ? n->style.font_weight : 400);
@@ -10060,7 +10118,8 @@ static void render_node(struct MiniNode *n, MiniRenderer *r)
         mini_renderer_push_clip(r, s->abs_x + cl, s->abs_y + ct, cw, ch);
     }
 
-    int skip_bg = (s->text_gradient == 1);
+    int is_body = (n->tag && !strcmp(n->tag, "body"));
+    int skip_bg = (s->text_gradient == 1) || is_body;
 
     if (s->w > 0 && s->h > 0 && (s->has_shadow || s->num_shadows > 0) && !skip_bg && op > 0.001f)
     {
@@ -10898,6 +10957,65 @@ void mini_dom_render_into(struct MiniNode *node, MiniRenderer *r)
     else
     {
         render_node(node, r);
+    }
+}
+
+void mini_dom_render_page_backdrop(struct MiniDocument *doc, MiniRenderer *r, float fw, float fh)
+{
+    if (!r)
+        return;
+    float bg_r = 0.043f, bg_g = 0.059f, bg_b = 0.098f, bg_a = 1.0f;
+    struct MiniNode *bg_node = NULL;
+    if (doc && doc->body && (doc->body->style.bg_a > 0.0f || doc->body->style.has_gradient || doc->body->style.bg_image_url[0]))
+        bg_node = doc->body;
+    else if (doc && doc->root && (doc->root->style.bg_a > 0.0f || doc->root->style.has_gradient || doc->root->style.bg_image_url[0]))
+        bg_node = doc->root;
+
+    if (bg_node && bg_node->style.bg_a > 0.0f)
+    {
+        bg_r = bg_node->style.bg_r;
+        bg_g = bg_node->style.bg_g;
+        bg_b = bg_node->style.bg_b;
+        bg_a = bg_node->style.bg_a;
+    }
+    mini_draw_clear(r, bg_r, bg_g, bg_b, bg_a);
+
+    if (bg_node)
+    {
+        MiniStyle *s = &bg_node->style;
+        float op = s->has_opacity ? s->opacity : 1.0f;
+        if (s->bg_image_url[0] != '\0')
+        {
+            float own_fs = s->font_size > 0.0f ? s->font_size : 16.0f;
+            float bw = resolve_len(s->bg_size_w, fw, own_fs, 16.0f, fw, fh);
+            float bh = resolve_len(s->bg_size_h, fh, own_fs, 16.0f, fw, fh);
+            float bx = resolve_len(s->bg_pos_x, fw, own_fs, 16.0f, fw, fh);
+            float by = resolve_len(s->bg_pos_y, fh, own_fs, 16.0f, fw, fh);
+            float rad[4] = {0, 0, 0, 0};
+            mini_draw_background_image(r, 0, 0, fw, fh, s->bg_image_url, s->bg_size_mode, bw, bh, bx, by, s->bg_repeat, rad);
+        }
+        else if (s->has_gradient)
+        {
+            if (s->grad_num_stops >= 2)
+            {
+                struct { float r, g, b, a; float pos; } stops[MINI_MAX_GRAD_STOPS];
+                for (int si = 0; si < s->grad_num_stops; si++)
+                {
+                    stops[si].r = s->grad_stops[si].r;
+                    stops[si].g = s->grad_stops[si].g;
+                    stops[si].b = s->grad_stops[si].b;
+                    stops[si].a = s->grad_stops[si].a * op;
+                    stops[si].pos = s->grad_stops[si].pos;
+                }
+                float rad[4] = {0, 0, 0, 0};
+                mini_draw_gradient_multi(r, 0, 0, fw, fh, stops, s->grad_num_stops, s->grad_type, s->grad_angle, rad);
+            }
+            else
+            {
+                mini_draw_gradient(r, 0, 0, fw, fh, s->grad_r1, s->grad_g1, s->grad_b1, s->grad_a1 * op,
+                                   s->grad_r2, s->grad_g2, s->grad_b2, s->grad_a2 * op, s->grad_type, s->grad_angle);
+            }
+        }
     }
 }
 
@@ -14281,7 +14399,6 @@ static void tick_transitions(struct MiniNode *n, double dt)
         MiniActiveTransition *tr = *prev;
         if (g_tick_doc)
         {
-            g_tick_doc->dirty = 1;
             g_tick_doc->active_effects = 1; /* a transition is still running */
             g_tick_doc->paint_dirty = 1;    /* interpolated value changed this frame */
         }
@@ -14309,11 +14426,6 @@ static void tick_transitions(struct MiniNode *n, double dt)
             n->style.rotate_z = tr->start_val[7] * (1.0f - ease) + tr->target_val[7] * ease;
             n->style.has_transform = 1;
             n->dirty_paint = 1;
-            if (g_tick_doc)
-            {
-                g_tick_doc->dirty = 1;
-                g_tick_doc->active_effects = 1;
-            }
         }
         else if (!strcmp(tr->prop, "box-shadow") || !strcmp(tr->prop, "shadow"))
         {
@@ -14412,10 +14524,9 @@ void mini_dom_tick_frame(MiniDocument *doc, double delta_time)
        value, or a completed one-shot reveal). */
     doc->paint_dirty = 0;
 
-    /* 关键修复：只要当前帧有 JS Canvas 2D 指令待绘制，必须标记脏区和活跃特效，驱动下一帧 requestAnimationFrame 持续循环 */
+    /* 关键修复：只要当前帧有 JS Canvas 2D 指令待绘制，必须标记活跃特效和绘制脏区，驱动下一帧持续刷新，不触发重排 */
     if (g2d_n > 0)
     {
-        doc->dirty = 1;
         doc->active_effects = 1;
         doc->paint_dirty = 1;
     }

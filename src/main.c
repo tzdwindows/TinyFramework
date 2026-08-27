@@ -969,26 +969,9 @@ MiniResult mini_app_run(MiniApp *app)
         if (app->diag)
             mini_diag_section(app->diag, &t, MINI_DIAG_LAYOUT);
 
-        /* DOM render: clear to the document's computed background color if specified,
-           or default to dark backdrop (#000000 or #0b0f19). */
-        float bg_r = 0.043f, bg_g = 0.059f, bg_b = 0.098f, bg_a = 1.0f;
-        if (app->doc && app->doc->body && app->doc->body->style.bg_a > 0.0f)
-        {
-            bg_r = app->doc->body->style.bg_r;
-            bg_g = app->doc->body->style.bg_g;
-            bg_b = app->doc->body->style.bg_b;
-            bg_a = app->doc->body->style.bg_a;
-        }
-        else if (app->doc && app->doc->root && app->doc->root->style.bg_a > 0.0f)
-        {
-            bg_r = app->doc->root->style.bg_r;
-            bg_g = app->doc->root->style.bg_g;
-            bg_b = app->doc->root->style.bg_b;
-            bg_a = app->doc->root->style.bg_a;
-        }
-        /* 1. Clear background */
+        /* 1. Clear background & render page backdrop (solid, gradient, image) */
         mini_renderer_begin_frame(app->r);
-        mini_draw_clear(app->r, bg_r, bg_g, bg_b, bg_a);
+        mini_dom_render_page_backdrop(app->doc, app->r, (float)fw, (float)fh);
         mini_renderer_flush(app->r);
 
         /* 2. JS frame (rAF): WebGL/Three.js draws into canvas region */

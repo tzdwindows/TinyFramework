@@ -236,6 +236,8 @@ extern "C"
       /* 2D / 3D transform */
       uint8_t has_transform;
       float translate_x, translate_y, translate_z;
+      uint8_t translate_x_is_pct, translate_y_is_pct;
+      float translate_x_pct, translate_y_pct;
       float rotate_x, rotate_y, rotate_z; /* radians */
       float scale_x, scale_y, scale_z;
       float skew_x, skew_y;

@@ -305,7 +305,9 @@ extern "C"
     /* Pipeline <-> layout wiring (defined in mini_dom.c)                */
     /* ------------------------------------------------------------------ */
     struct MiniNode;
+    struct MiniDocument;
     void mini_dom_render_into(struct MiniNode *node, MiniRenderer *r);
+    void mini_dom_render_page_backdrop(struct MiniDocument *doc, MiniRenderer *r, float fw, float fh);
 
     /* Add to API declarations */
     void mini_draw_rect_rounded(MiniRenderer *r, float x, float y, float w, float h, float radius, float cr, float cg, float cb, float ca);
