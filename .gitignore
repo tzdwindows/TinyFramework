@@ -8,6 +8,7 @@
 !build.ps1
 !build.py
 !CMakeLists.txt
+!README.md
 
 # 4. 显式放行指定的目录（以及目录下的所有子内容）
 !build/
