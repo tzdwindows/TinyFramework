@@ -1330,6 +1330,32 @@ MiniResult mini_app_run(MiniApp *app)
                 }
                 free(png);
             }
+            /* also screenshot every open secondary window so we can verify what
+               a loadURL'd page (e.g. an SPA) actually painted. */
+            {
+                int nsec = 0;
+                MiniWindow **secs = mini_app_windows(app, &nsec);
+                for (int i = 0, k = 0; i < nsec; i++)
+                {
+                    MiniWindow *mw = secs[i];
+                    if (!mw || mw->is_primary || mw->closing || !mw->r)
+                        continue;
+                    /* switch to this window's GL context to read its framebuffer */
+                    if (mw->win)
+                        glfwMakeContextCurrent((GLFWwindow *)mw->win);
+                    mini_dom_set_active_doc(mw->doc);
+                    uint8_t *sp = NULL; size_t sl = 0;
+                    if (mini_renderer_screenshot_png(mw->r, &sp, &sl) == 0 && sp)
+                    {
+                        char path[64];
+                        snprintf(path, sizeof path, "build/shot_sec%d.png", k++);
+                        FILE *sf = fopen(path, "wb");
+                        if (sf) { fwrite(sp, 1, sl, sf); fclose(sf); }
+                        free(sp);
+                    }
+                }
+                glfwMakeContextCurrent(win);
+            }
             glfwSetWindowShouldClose(win, GLFW_TRUE);
             break;
         }

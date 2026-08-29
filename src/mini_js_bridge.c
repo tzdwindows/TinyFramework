@@ -850,8 +850,30 @@ static const char *mini_js_shim =
     "MiniElement.prototype.querySelectorAll = function(sel){ return this._cqa ? this._cqa(String(sel)) : document.querySelectorAll(sel); };\n"
     "MiniElement.prototype.getElementsByTagName = function(tag){ return this.querySelectorAll(String(tag)); };\n"
     "MiniElement.prototype.getElementsByClassName = function(cls){ return this.querySelectorAll('.' + String(cls)); };\n"
-    "MiniElement.prototype.getClientRects = function(){ var r = this.getBoundingClientRect(); return [r]; };\n"
-    "Object.defineProperty(MiniElement.prototype, 'ownerDocument', { configurable:true, get(){ return typeof document !== 'undefined' ? document : null; } });\n"
+"MiniElement.prototype.getClientRects = function(){ var r = this.getBoundingClientRect(); return [r]; };\n"
+"/* ParentNode/ChildNode methods modern React calls (append/prepend/before/after/replaceWith/replaceChildren/insertAdjacentHTML/toggleAttribute/getRootNode/scrollTo/scrollBy/remove/replaceChild) — built on the existing appendChild/insertBefore/removeChild/_firstChild/_nextSibling/_parentNode primitives. */\n"
+"(function(){\n"
+"  function norm(n){ return (n == null || typeof n === 'string' || typeof n === 'number') ? document.createTextNode(String(n==null?'':n)) : n; }\n"
+"  MiniElement.prototype.append = function(){ for (var i=0;i<arguments.length;i++) this.appendChild(norm(arguments[i])); };\n"
+"  MiniElement.prototype.prepend = function(){ var f=this._firstChild ? this._firstChild() : null; for (var i=arguments.length-1;i>=0;i--) this.insertBefore(norm(arguments[i]), f); };\n"
+"  MiniElement.prototype.before = function(){ var p=this._parentNode ? this._parentNode() : null; if(!p) return; for (var i=0;i<arguments.length;i++) p.insertBefore(norm(arguments[i]), this); };\n"
+"  MiniElement.prototype.after = function(){ var p=this._parentNode ? this._parentNode() : null; if(!p) return; var nx=this._nextSibling ? this._nextSibling() : null; for (var i=arguments.length-1;i>=0;i--) p.insertBefore(norm(arguments[i]), nx); };\n"
+"  MiniElement.prototype.replaceWith = function(){ var p=this._parentNode ? this._parentNode() : null; if(!p) return; var nx=this._nextSibling ? this._nextSibling() : null; for (var i=0;i<arguments.length;i++) p.insertBefore(norm(arguments[i]), nx); p.removeChild(this); };\n"
+"  MiniElement.prototype.replaceChildren = function(){ while (this._firstChild && this._firstChild()) this.removeChild(this._firstChild()); for (var i=0;i<arguments.length;i++) this.appendChild(norm(arguments[i])); };\n"
+"  MiniElement.prototype.remove = function(){ var p=this._parentNode ? this._parentNode() : null; if(p) p.removeChild(this); };\n"
+"  MiniElement.prototype.replaceChild = function(newc, oldc){ this.insertBefore(newc, oldc); this.removeChild(oldc); return oldc; };\n"
+"  MiniElement.prototype.toggleAttribute = function(name, force){ name=String(name); var has=this.getAttribute(name)!=null; if(force===undefined){ if(has) this.removeAttribute(name); else this.setAttribute(name,''); return !has; } if(force){ this.setAttribute(name,''); return true; } this.removeAttribute(name); return false; };\n"
+"  MiniElement.prototype.getRootNode = function(){ var n=this; while (n && n._parentNode){ var p=n._parentNode(); if(!p) break; n=p; } return n; };\n"
+"  MiniElement.prototype.scrollTo = function(){};\n"
+"  MiniElement.prototype.scrollBy = function(){};\n"
+"  MiniElement.prototype.scrollIntoViewIfNeeded = function(){};\n"
+"  MiniElement.prototype.insertAdjacentElement = function(where, el){ where=String(where).toLowerCase(); if(where==='beforebegin'||where==='afterbegin'||where==='beforeend'||where==='afterend'){ try{ if(where==='beforebegin') this.before(el); else if(where==='afterend') this.after(el); else if(where==='afterbegin') this.insertBefore(el, this._firstChild?this._firstChild():null); else this.appendChild(el); return el; }catch(e){ return null; } } return null; };\n"
+"  MiniElement.prototype.insertAdjacentText = function(where, t){ return this.insertAdjacentElement(where, document.createTextNode(String(t))); };\n"
+"  MiniElement.prototype.insertAdjacentHTML = function(where, html){ /* best-effort: parse via a temp container's innerHTML, then move nodes */ try{ var tmp=document.createElement('div'); tmp._setInnerHTML ? tmp._setInnerHTML(String(html)) : (tmp.innerHTML=String(html)); var fc=tmp._firstChild?tmp._firstChild():null; var arr=[]; while(fc){ arr.push(fc); fc=fc._nextSibling?fc._nextSibling():null; } var t=this.insertAdjacentElement.bind(this); for(var i=0;i<arr.length;i++) this.insertAdjacentElement(where, arr[i]); }catch(e){} };\n"
+"  MiniElement.prototype.matches ? 0 : (MiniElement.prototype.matches = function(sel){ return false; });\n"
+"  if(!MiniElement.prototype.namedItem) MiniElement.prototype.namedItem = function(){ return null; };\n"
+"}());\n"
+"Object.defineProperty(MiniElement.prototype, 'ownerDocument', { configurable:true, get(){ return typeof document !== 'undefined' ? document : null; } });\n"
     "MiniElement.prototype.click = function(){ var ev = new MouseEvent('click', { bubbles:true, cancelable:true }); this.dispatchEvent(ev); };\n"
     "if (typeof ImageBitmap === 'undefined') {\n"
     "  globalThis.ImageBitmap = class ImageBitmap { constructor(w,h){ this.width=w||0; this.height=h||0; } close(){ this.width=0; this.height=0; } };\n"
@@ -1093,6 +1115,38 @@ static const char *mini_js_shim =
 "if (typeof structuredClone === 'undefined') globalThis.structuredClone = function(v){ return JSON.parse(JSON.stringify(v)); };\n"
 "if (typeof atob === 'undefined') globalThis.atob = function(s){ return s; };\n"
 "if (typeof btoa === 'undefined') globalThis.btoa = function(s){ return s; };\n"
+"/* ES2022 relative-indexing .at() — QuickJS lacks it; modern bundles call\n"
+"   arr.at(-1) / str.at(0), and a missing method reads as 'not a function'. */\n"
+"if(!Array.prototype.at) Array.prototype.at=function(i){ var n=this.length; i=(i===undefined)?0:Number(i)|0; if(i<0)i+=n; return (i<0||i>=n)?undefined:this[i]; };\n"
+"if(!String.prototype.at) String.prototype.at=function(i){ var n=this.length; i=(i===undefined)?0:Number(i)|0; if(i<0)i+=n; return (i<0||i>=n)?'':this.charAt(i); };\n"
+"if(!Object.hasOwn) Object.hasOwn=function(o,k){ return Object.prototype.hasOwnProperty.call(o,k); };\n"
+"if(typeof crypto==='undefined'){ var _crypto={}; _crypto.getRandomValues=function(a){ for(var i=0;i<a.length;i++){ a[i]=(Math.random()*4294967296)>>>0; } return a; }; _crypto.randomUUID=function(){ var b=new Uint8Array(16); this.getRandomValues(b); b[6]=(b[6]&0x0f)|0x40; b[8]=(b[8]&0x3f)|0x80; var s=''; for(var i=0;i<16;i++){ var x=b[i].toString(16); s+=(x.length<2?'0'+x:x); if(i===3||i===5||i===7||i===9)s+='-'; } return s; }; _crypto.subtle={ digest:function(){ return Promise.resolve(new ArrayBuffer(0)); }, importKey:function(){ return Promise.resolve({}); }, exportKey:function(){ return Promise.resolve(new ArrayBuffer(0)); }, sign:function(){ return Promise.resolve(new ArrayBuffer(0)); }, verify:function(){ return Promise.resolve(true); }, encrypt:function(){ return Promise.resolve(new ArrayBuffer(0)); }, decrypt:function(){ return Promise.resolve(new ArrayBuffer(0)); }, deriveBits:function(){ return Promise.resolve(new ArrayBuffer(0)); } }; globalThis.crypto=_crypto; window.crypto=_crypto; }\n"
+"if(navigator && !navigator.clipboard) navigator.clipboard={ writeText:function(){ return Promise.resolve(); }, readText:function(){ return Promise.resolve(''); }, read:function(){ return Promise.resolve([]); } };\n"
+"if(!Array.prototype.flat) Array.prototype.flat=function(d){ d=(d===undefined)?1:Number(d)|0; var r=[]; (function E(a){ for(var i=0;i<a.length;i++){ if(Array.isArray(a[i])&&d>0) E(a[i]); else r.push(a[i]); } })(this); return r; };\n"
+"if(!Array.prototype.flatMap) Array.prototype.flatMap=function(cb,ta){ var r=[]; for(var i=0;i<this.length;i++){ var v=cb.call(ta,this[i],i,this); if(Array.isArray(v)) for(var j=0;j<v.length;j++) r.push(v[j]); else r.push(v); } return r; };\n"
+"/* Intl best-effort: QuickJS may not ship full Intl; a React i18n/price app calls new Intl.NumberFormat().format(n) during render. Provide functional stubs so it returns a usable string instead of throwing. */\n"
+"if (typeof Intl === 'undefined') { globalThis.Intl = {}; }\n"
+"if (!Intl.NumberFormat) { Intl.NumberFormat = function(loc, opts){ this.opts = opts||{}; this.loc = loc; this.format = function(n){ var s = String(n); return s; }; this.formatToParts = function(n){ return [{type:'integer', value:String(n)}]; }; this.resolvedOptions = function(){ return {locale:(this.loc&&this.loc[0])||'en', numberingSystem:'latn'}; }; };\n"
+"  if (!Intl.NumberFormat.supportedLocalesOf) Intl.NumberFormat.supportedLocalesOf = function(){ return ['en']; };\n"
+"}\n"
+"if (!Intl.DateTimeFormat) { Intl.DateTimeFormat = function(loc, opts){ this.opts=opts||{}; this.format=function(d){ d=(d===undefined?new Date():d); return (d instanceof Date?d:new Date(d)).toString(); }; this.formatToParts=function(d){ return [{type:'literal', value:this.format(d)}]; }; this.resolvedOptions=function(){ return {locale:'en'}; }; };\n"
+"  if (!Intl.DateTimeFormat.supportedLocalesOf) Intl.DateTimeFormat.supportedLocalesOf = function(){ return ['en']; };\n"
+"}\n"
+"if (!Intl.RelativeTimeFormat) { Intl.RelativeTimeFormat = function(loc, opts){ this.format=function(v,unit){ return v+' '+unit; }; this.formatToParts=function(v,unit){ return [{type:'integer', value:String(v)},{type:'literal', value:' '+unit}]; }; }; }\n"
+"if (!Intl.Collator) { Intl.Collator = function(){ this.compare=function(a,b){ return a<b?-1:(a>b?1:0); }; }; }\n"
+"if (!Intl.getCanonicalLocales) Intl.getCanonicalLocales = function(l){ return [].concat(l); };\n"
+"if (!Array.prototype.findLast) Array.prototype.findLast=function(cb,ta){ for(var i=this.length-1;i>=0;i--){ if(cb.call(ta,this[i],i,this)) return this[i]; } return undefined; };\n"
+"if (!Array.prototype.findLastIndex) Array.prototype.findLastIndex=function(cb,ta){ for(var i=this.length-1;i>=0;i--){ if(cb.call(ta,this[i],i,this)) return i; } return -1; };\n"
+"if (!Array.prototype.at) Array.prototype.at=function(i){ var n=this.length; i=(i===undefined)?0:Number(i)|0; if(i<0)i+=n; return (i<0||i>=n)?undefined:this[i]; };\n"
+"if (!Object.fromEntries) Object.fromEntries = function(a){ var o={}; for(var i=0;i<a.length;i++){ var e=a[i]; o[e[0]]=e[1]; } return o; };\n"
+"MiniElement.prototype.compareDocumentPosition = function(other){ if(this===other) return 0; return 4; /* following*/ };\n"
+"MiniElement.prototype.setSelectionRange = function(){};\n"
+"MiniElement.prototype.checkValidity = function(){ return true; };\n"
+"MiniElement.prototype.reportValidity = function(){ return true; };\n"
+"MiniElement.prototype.setCustomValidity = function(){};\n"
+"MiniElement.prototype.animate = function(){ return { cancel:function(){}, finished:Promise.resolve(), play:function(){}, pause:function(){} }; };\n"
+"if (typeof window !== 'undefined' && !window.postMessage) window.postMessage = function(){};\n"
+"if (typeof globalThis.postMessage === 'undefined') globalThis.postMessage = function(){};\n"
 "function FileReader(){\n"
     "  this.result = null; this.error = null; this.readyState = 0;\n"
     "  this.onload = null; this.onerror = null; this.onloadend = null;\n"
@@ -1178,8 +1232,13 @@ static const char *mini_js_shim =
     "  r.remove=function(){ var cur=toks(); for(var i=0;i<arguments.length;i++){ var c=String(arguments[i]); var j=cur.indexOf(c); if(j>=0) cur.splice(j,1);} el.setAttribute('class',cur.join(' ')); };\n"
     "  r.toggle=function(c,force){ var cur=toks(); c=String(c); var has=cur.indexOf(c)>=0; if(has&&force!==true){cur.splice(cur.indexOf(c),1);el.setAttribute('class',cur.join(' '));return false;} if(!has&&force!==false){cur.push(c);el.setAttribute('class',cur.join(' '));return true;} return has; };\n"
     "  r.replace=function(o,n){ var cur=toks(); o=String(o);n=String(n); var i=cur.indexOf(o); if(i>=0){cur[i]=n;el.setAttribute('class',cur.join(' '));} };\n"
-    "  r.item=function(i){ var t=toks(); return t[i]||null; };\n"
-    "  r.toString=function(){ return el.getAttribute('class')||''; };\n"
+"  r.item=function(i){ var t=toks(); return t[i]||null; };\n"
+"  r.forEach=function(cb, thisArg){ var t=toks(); for(var i=0;i<t.length;i++){ cb.call(thisArg, t[i], i, this); } };\n"
+"  r.entries=function(){ var t=toks(); var i=0; var it={ next:function(){ return i<t.length?{value:[i,t[i++]],done:false}:{value:undefined,done:true}; } }; if(typeof Symbol!=='undefined') it[Symbol.iterator]=function(){ return it; }; return it; };\n"
+"  r.keys=function(){ var t=toks(); var i=0; var it={ next:function(){ return i<t.length?{value:t[i++],done:false}:{value:undefined,done:true}; } }; if(typeof Symbol!=='undefined') it[Symbol.iterator]=function(){ return it; }; return it; };\n"
+"  r.values=function(){ var t=toks(); var i=0; var it={ next:function(){ return i<t.length?{value:t[i++],done:false}:{value:undefined,done:true}; } }; if(typeof Symbol!=='undefined') it[Symbol.iterator]=function(){ return it; }; return it; };\n"
+"  if (typeof Symbol !== 'undefined' && Symbol.iterator) r[Symbol.iterator] = r.values;\n"
+"  r.toString=function(){ return el.getAttribute('class')||''; };\n"
     "  return r;\n"
     "}});\n"
     /* dataset: a Proxy over data-* attributes (camelCase <-> data-kebab-case). */
@@ -1198,6 +1257,19 @@ static const char *mini_js_shim =
        are not interned. */
     /* HTMLElement alias so `instanceof HTMLElement` works. */
     "window.HTMLElement = MiniElement;\n"
+    /* Base-class globals React/libraries reference (instanceof Element, instanceof Node, ...). */
+    "window.Element = MiniElement; globalThis.Element = MiniElement;\n"
+    "window.Node = MiniElement; globalThis.Node = MiniElement;\n"
+    "window.Document = MiniDocument; globalThis.Document = MiniDocument;\n"
+    "window.DocumentFragment = MiniDocument; globalThis.DocumentFragment = MiniDocument;\n"
+    "window.EventTarget = MiniElement; globalThis.EventTarget = MiniElement;\n"
+    "if (typeof Text === 'undefined') { window.Text = globalThis.Text = function Text(){}; }\n"
+    "if (typeof Comment === 'undefined') { window.Comment = globalThis.Comment = function Comment(){}; }\n"
+    "if (typeof NodeList === 'undefined') { window.NodeList = globalThis.NodeList = function NodeList(){}; NodeList.prototype.forEach = Array.prototype.forEach; }\n"
+    "if (typeof HTMLCollection === 'undefined') { window.HTMLCollection = globalThis.HTMLCollection = function HTMLCollection(){}; HTMLCollection.prototype.forEach = Array.prototype.forEach; }\n"
+    "if (typeof DOMTokenList === 'undefined') { window.DOMTokenList = globalThis.DOMTokenList = function DOMTokenList(){}; }\n"
+    "if (typeof MutationRecord === 'undefined') { window.MutationRecord = globalThis.MutationRecord = function MutationRecord(){}; }\n"
+    "if (typeof ShadowRoot === 'undefined') { window.ShadowRoot = globalThis.ShadowRoot = function ShadowRoot(){}; }\n"
     /* Concrete HTML*Element constructors. React (and other libs) do
        `el instanceof window.HTMLIFrameElement` / `HTMLInputElement` / ...; if
        those globals are undefined, `instanceof` throws "invalid instanceof
@@ -1281,6 +1353,15 @@ static const char *mini_js_shim =
     "  globalThis.MutationObserver = class MutationObserver { constructor(cb){ this.cb=cb; } observe(target, opts){} disconnect(){} takeRecords(){ return []; } };\n"
     "  window.MutationObserver = globalThis.MutationObserver;\n"
     "}\n"
+    "if (typeof IntersectionObserver === 'undefined') {\n"
+    "  globalThis.IntersectionObserver = class IntersectionObserver {\n"
+    "    constructor(cb, opts){ this.cb=cb; this.opts=opts||{}; }\n"
+    "    observe(t){ /* best-effort: report as immediately intersecting so lazy content renders */ try{ var r={ target:t, isIntersecting:true, intersectionRatio:1, intersectionRect:(t&&t.getBoundingClientRect?t.getBoundingClientRect():{top:0,left:0,bottom:0,right:0,width:0,height:0}), boundingClientRect:(t&&t.getBoundingClientRect?t.getBoundingClientRect():{}), rootBounds:null, time:0 }; this.cb([r], this); }catch(e){} }\n"
+    "    unobserve(t){} disconnect(){} takeRecords(){ return []; } };\n"
+    "  window.IntersectionObserver = globalThis.IntersectionObserver;\n"
+    "}\n"
+    "if (typeof PerformanceObserver === 'undefined') { globalThis.PerformanceObserver = class PerformanceObserver { constructor(cb){} observe(){} disconnect(){} takeRecords(){ return []; } }; window.PerformanceObserver = globalThis.PerformanceObserver; }\n"
+    "if (typeof ReportingObserver === 'undefined') { globalThis.ReportingObserver = class ReportingObserver { constructor(cb){} observe(){} disconnect(){} takeRecords(){ return []; } }; window.ReportingObserver = globalThis.ReportingObserver; }\n"
     "if (typeof document.fonts === 'undefined') {\n"
     "  document.fonts = { ready: Promise.resolve(), check: function(){ return true; }, load: function(){ return Promise.resolve([]); }, addEventListener: function(){}, removeEventListener: function(){} };\n"
     "}\n"
@@ -1455,7 +1536,23 @@ static const char *mini_js_shim =
     "  warn(){  __emit.apply(null, ['warning'].concat([].slice.call(arguments))); },\n"
     "  error(){ __emit.apply(null, ['error'].concat([].slice.call(arguments))); }\n"
     "};\n"
-    "var __fmt = function(a){ try { return typeof a==='object' ? JSON.stringify(a) : String(a); } catch(e){ return String(a); } };\n"
+    "var __fmt = function(a){\n"
+"  try {\n"
+"    if (a === null) return 'null';\n"
+"    if (typeof a === 'object') {\n"
+"      /* Error objects have non-enumerable message/stack, so JSON.stringify\n"
+"         collapses them to '{}' — surface them explicitly so a thrown React\n"
+"         error actually shows its message + stack instead of '{}'. */\n"
+"      if (typeof a.message === 'string' && (typeof a.stack === 'string' || a instanceof Error)) {\n"
+"        var head = (a.name || 'Error') + ': ' + a.message;\n"
+"        return a.stack ? (head + '\\n' + a.stack) : head;\n"
+"      }\n"
+"      var r; try { r = JSON.stringify(a); } catch(e){ r = String(a); }\n"
+"      return (r === undefined ? String(a) : r);\n"
+"    }\n"
+"    return String(a);\n"
+"  } catch(e){ return String(a); }\n"
+"};\n"
     "var __emit = function(lvl){ var s=''; for (var i=1;i<arguments.length;i++) s += (i>1?' ':'') + __fmt(arguments[i]); __log(lvl, s); };\n"
     "function __thenable(v){ if(v && typeof v.then==='function') return v; return Promise.resolve(v); };\n"
     "/* Web Audio API standard polyfill */\n"
@@ -7468,6 +7565,7 @@ static JSValue js_resp_blob(JSContext *ctx, JSValueConst tv, int argc, JSValueCo
 static JSValue js_fetch(JSContext *ctx, JSValueConst tv, int argc, JSValueConst *argv)
 {
     (void)tv;
+    MiniBridge *b = bridge_of(ctx);
     const char *url = NULL;
     if (argc >= 1)
     {
@@ -7642,7 +7740,14 @@ static JSValue js_fetch(JSContext *ctx, JSValueConst tv, int argc, JSValueConst 
 
         MiniNetRecord rec;
         memset(&rec, 0, sizeof rec);
-        mini_net_fetch(method, url, hdrs, body, body_len, NULL, &rec);
+        /* Resolve a relative URL (e.g. "/api/status") against the page origin
+           (b->doc_url) so an SPA's same-origin API calls actually reach the site
+           instead of failing in mini_net_fetch (which only speaks http(s)://). */
+        char fetch_fullurl[1100];
+        const char *fetch_url = url;
+        if (b && script_resolve_url(b, url, fetch_fullurl, sizeof fetch_fullurl))
+            fetch_url = fetch_fullurl;
+        mini_net_fetch(method, fetch_url, hdrs, body, body_len, NULL, &rec);
         status = rec.status;
         status_text = (rec.status >= 200 && rec.status < 300) ? "OK" : "Error";
         raw_body = (uint8_t *)rec.resp_body;
