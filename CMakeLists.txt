@@ -1,19 +1,20 @@
-# TinyFramework — CMake build (CUSTOM_MINI self-written renderer mode)
+# TinyFramework — CMake build (self-written CUSTOM_MINI renderer mode)
 cmake_minimum_required(VERSION 3.16)
 project(TinyFramework C)
 
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
-option(ENABLE_CDP        "Embed the Chrome DevTools Protocol server" ON)
-option(ENABLE_DIAG       "Embed the runtime diagnostics/profiler"     ON)
-option(TINY_NATIVE       "Build against the OS WebView (NATIVE mode)" OFF)
-option(MINI_JIT          "Build QuickJS from source with the baseline JIT (JS_JIT)" ON)
+# ---- Build options -------------------------------------------------
+option(ENABLE_CDP        "Embed the Chrome DevTools Protocol server"        ON)
+option(ENABLE_DIAG       "Embed the runtime diagnostics/profiler"          ON)
+option(TINY_NATIVE       "Build against the OS WebView (NATIVE mode)"      OFF)
+option(MINI_JIT          "Build QuickJS from source with the baseline JIT" ON)
 option(MINI_JIT_CODEGEN  "Enable SLJIT native codegen (implies MINI_JIT)" ON)
-option(MINI_TLS          "Enable HTTPS via vendored mbedtls" ON)
-option(GUI_APP           "Build as Windows GUI subsystem (-mwindows)" ON)
+option(MINI_TLS          "Enable HTTPS via vendored mbedtls"              ON)
+option(GUI_APP           "Build as Windows GUI subsystem (-mwindows)"     ON)
 
-# 自定义 GLFW 安装路径（若不在系统路径中可直接通过 -DGLFW_ROOT=... 覆盖）
+# Path to a prebuilt GLFW SDK. Override with -DGLFW_ROOT=/path/to/glfw.
 set(GLFW_ROOT "D:/glfw-3.4.bin.WIN64" CACHE PATH "Path to prebuilt GLFW SDK")
 
 # ---- Global definitions & flags -----------------------------------
@@ -25,12 +26,12 @@ else()
     set(MODE_FLAGS -DENABLE_CUSTOM_MINI_ENGINE)
 endif()
 
-# 编码与编译器特性配置
+# Keep source UTF-8 for both input and exec charset (CJK comments/strings).
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-finput-charset=UTF-8 -fexec-charset=UTF-8)
 endif()
 
-# ---- vendored dependencies: QuickJS -------------------------------
+# ---- Vendored dependency: QuickJS ----------------------------------
 set(QJS_SRC
         libs/quickjs/quickjs.c
         libs/quickjs/libregexp.c
@@ -43,6 +44,9 @@ target_include_directories(quickjs_objs PRIVATE libs/quickjs)
 target_compile_definitions(quickjs_objs PRIVATE
         _GNU_SOURCE
         CONFIG_VERSION="2024-01-13"
+        ENABLE_DUMPS            # compiles the leak-dump path; only fires when
+                                # JS_SetDumpFlags(JS_DUMP_LEAKS) is set, e.g. via
+                                # the TINY_DUMP_LEAKS env var at runtime
 )
 
 if(MINI_JIT)
@@ -55,8 +59,7 @@ if(MINI_JIT)
     endif()
 endif()
 
-# ---- vendored dependencies: MbedTLS -------------------------------
-# 绕过 mbedtls 自带 CMakeLists 缺失 submodule 的问题，直接基于源码打包静态库
+# ---- Vendored dependency: MbedTLS (static lib from source) ---------
 if(MINI_TLS)
     file(GLOB MBEDTLS_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/libs/mbedtls/library/*.c")
     if(MBEDTLS_SOURCES)
@@ -73,7 +76,7 @@ if(MINI_TLS)
     endif()
 endif()
 
-# ---- Sources -------------------------------------------------------
+# ---- Application sources -------------------------------------------
 set(CORE_SRC
         src/main.c
         src/mini_renderer.c
@@ -107,7 +110,7 @@ set(CORE_SRC
         src/mini_protocol.c
 )
 
-# Windows 图标/版本资源文件编译
+# Windows app icon / version resource.
 if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/app.rc")
     list(APPEND CORE_SRC src/app.rc)
 endif()
@@ -120,11 +123,10 @@ if(ENABLE_DIAG)
     list(APPEND CORE_SRC src/mini_diag.c)
 endif()
 
-# ---- The App Executable -------------------------------------------
+# ---- The executable ------------------------------------------------
 add_executable(tiny_app ${CORE_SRC} $<TARGET_OBJECTS:quickjs_objs>)
 target_compile_definitions(tiny_app PRIVATE ${MODE_FLAGS})
 
-# Include 路径配置
 target_include_directories(tiny_app PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -134,7 +136,7 @@ target_include_directories(tiny_app PRIVATE
         $<$<BOOL:${MINI_JIT_CODEGEN}>:${CMAKE_CURRENT_SOURCE_DIR}/libs/sljit/sljit_src>
 )
 
-# 附加 GLFW SDK 搜索路径
+# Attach the GLFW SDK search paths when present.
 if(EXISTS "${GLFW_ROOT}/include")
     target_include_directories(tiny_app PRIVATE "${GLFW_ROOT}/include")
 endif()
@@ -142,8 +144,8 @@ if(EXISTS "${GLFW_ROOT}/lib-mingw-w64")
     target_link_directories(tiny_app PRIVATE "${GLFW_ROOT}/lib-mingw-w64")
 endif()
 
-# ---- Link Libraries & Flags ---------------------------------------
-# Windows GUI 模式
+# ---- Link libraries & flags ----------------------------------------
+# Windows GUI subsystem.
 if(WIN32 AND GUI_APP)
     if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
         target_link_options(tiny_app PRIVATE -mwindows)
@@ -152,7 +154,7 @@ if(WIN32 AND GUI_APP)
     endif()
 endif()
 
-# 基础图形及系统库
+# Graphics + system libs.
 if(WIN32)
     target_link_libraries(tiny_app PRIVATE
             glfw3dll
@@ -173,7 +175,7 @@ else()
     target_link_libraries(tiny_app PRIVATE glfw GL m pthread)
 endif()
 
-# MbedTLS 库链接
+# MbedTLS.
 if(MINI_TLS)
     target_compile_definitions(tiny_app PRIVATE MINI_TLS)
     if(TARGET mbedtls_static)
