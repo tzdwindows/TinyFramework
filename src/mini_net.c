@@ -598,6 +598,27 @@ static void ka_close_slot(KaConn *c)
    re-enabled per-host later; with this flag 0, ka_acquire returns NULL and
    mini_net_http falls through to the original one-off close path. */
 static int g_keepalive_enabled = 0;
+
+/* Process-wide proxy config (best-effort: HTTP forward-proxy only in this
+   build; HTTPS CONNECT tunneling is a documented best-effort/TODO). Set by
+   session.setProxy(); consulted by mini_net_http for plain http:// URLs. */
+static char g_proxy_url[1024] = {0};
+void mini_net_set_proxy(const char *url)
+{
+    if (!url) { g_proxy_url[0] = 0; return; }
+    snprintf(g_proxy_url, sizeof(g_proxy_url), "%s", url);
+}
+const char *mini_net_get_proxy(void) { return g_proxy_url; }
+
+/* Process-wide custom User-Agent override (session.setUserAgent). */
+static char g_user_agent[256] = {0};
+void mini_net_set_user_agent(const char *ua)
+{
+    if (!ua) { g_user_agent[0] = 0; return; }
+    snprintf(g_user_agent, sizeof(g_user_agent), "%s", ua);
+}
+const char *mini_net_get_user_agent(void) { return g_user_agent[0] ? g_user_agent : NULL; }
+
 static KaConn *ka_acquire(const char *host, int port, int is_https, int *out_reused)
 {
     *out_reused = 0;

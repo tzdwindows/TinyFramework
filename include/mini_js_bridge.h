@@ -16,6 +16,13 @@ typedef struct MiniBridge MiniBridge;
 
 /* Create engine + DOM/document globals + install the JS shim. */
 MiniBridge *mini_bridge_create(MiniRenderer *r, MiniDocument *doc);
+/* Same as above but for a renderer (secondary-window) context: installs
+ * browser globals + a renderer-scoped electron (ipcRenderer/contextBridge)
+ * instead of the full main-process surface (no app/BrowserWindow/ipcMain).
+ * Each call gets its own JSRuntime — windows are fully isolated. */
+MiniBridge *mini_bridge_create_child(MiniRenderer *r, MiniDocument *doc);
+/* Internal: shared creation core (is_renderer=1 → renderer electron). */
+MiniBridge *mini_bridge_create_ex(MiniRenderer *r, MiniDocument *doc, int is_renderer);
 void        mini_bridge_destroy(MiniBridge *b);
 
 /* Attach the W3C event system (mini_events.c). main.c calls this after
@@ -38,6 +45,12 @@ const char *mini_bridge_get_doc_url(const MiniBridge *b);
 
 /* Drain microtasks + fire due setTimeout timers. Called every frame. */
 void mini_bridge_pump(MiniBridge *b);
+
+/* Set/get the process-wide "active bridge" (whose JSContext is the fallback
+   owner for nodes torn down outside a JS call). The host run loop switches
+   this per-window before pumping/rendering each window. */
+void mini_bridge_set_active(MiniBridge *b);
+MiniBridge *mini_bridge_get_active(void);
 
 /* Fire all queued requestAnimationFrame callbacks with `time_ms`.
    Callbacks registered during firing land in the next frame's queue. */

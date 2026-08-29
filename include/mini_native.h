@@ -23,6 +23,7 @@ extern "C" {
 /* Forward decls — MiniBridge is opaque (defined privately in mini_js_bridge.c). */
 struct MiniBridge;
 struct MiniRenderer;
+struct MiniApp;
 
 /* ---- child_process support ------------------------------------------------- */
 
@@ -64,6 +65,13 @@ const char *mini_navigator_platform(void);
    from mini_bridge_create() after install_webgl(). */
 void install_native(struct MiniBridge *b);
 
+/* Install the renderer-scoped `electron` object on a secondary-window
+   (renderer) context: ipcRenderer, contextBridge, webFrame, crashReporter.
+   No app/BrowserWindow/ipcMain/os/fs/child_process (Electron renderer split).
+   Called from mini_bridge_create_ex() when is_renderer=1. The ipcRenderer
+   bindings are wired to the process-wide MiniIPC registry (mini_ipc.c). */
+void install_renderer_electron(struct MiniBridge *b);
+
 /* Per-frame: drain any finished child processes (non-blocking) and fire their
    JS callbacks/listeners. Called from mini_bridge_pump() after
    bridge_pump_websockets(). */
@@ -72,6 +80,28 @@ void bridge_pump_children(struct MiniBridge *b);
 /* Release every tracked child process + free buffers. Called from
    mini_bridge_destroy(). */
 void mini_native_destroy(struct MiniBridge *b);
+
+/* ---- app lifecycle (multi-window / single-instance) --------------------- */
+/* Mark the app as packaged (loaded from an encrypted bundle) so app.isPackaged
+ * returns true. Called from mini_app_load_encrypted in main.c. */
+void mini_native_set_packaged(int packaged);
+
+/* Emit an app lifecycle event (e.g. "window-all-closed", "before-quit",
+ * "browser-window-created", "activate") to its JS listeners in the MAIN
+ * context. argv (argc of them) are dup'd in the main ctx and consumed.
+ * "browser-window-created" is emitted by the BrowserWindow constructor. */
+void mini_app_emit(struct MiniApp *app, const char *event, int argc, JSValueConst *argv);
+void mini_app_emit_event(struct MiniApp *app, const char *event); /* 0-arg convenience */
+
+/* Drain any second-instance relays (argv/cwd handed off by a 2nd process over
+ * the named pipe) and emit 'second-instance' on the main context. Called by
+ * the host run loop each frame (main phase). */
+void mini_app_pump_second_instance(struct MiniApp *app);
+
+/* Drain any completed `net.request` fetches (run on background threads) and
+ * emit response/data/end/error on each ClientRequest in its main context.
+ * Called by the host run loop each frame (main phase). */
+void mini_net_api_pump(struct MiniApp *app);
 
 /* ---- bridge accessors (implemented in mini_js_bridge.c so MiniBridge stays
    opaque to mini_native.c; each just exposes a private field) --------------- */
@@ -87,6 +117,28 @@ char **mini_bridge_argv(struct MiniBridge *b, int *argc_out);
 
 /* Renderer handle (for window operations: app.quit, BrowserWindow, dialog). */
 struct MiniRenderer *mini_bridge_renderer(struct MiniBridge *b);
+
+/* Multi-window: this bridge's owning window id (0 = main process / primary,
+   >0 = a renderer / secondary window). The IPC registry routes messages
+   between the main context and each renderer by this id. */
+void mini_bridge_set_window_id(struct MiniBridge *b, int id);
+int  mini_bridge_get_window_id(struct MiniBridge *b);
+
+/* The MiniApp host pointer (set on the main/primary bridge only) so the
+   BrowserWindow constructor — which runs in the main context — can reach the
+   host to create secondary windows. NULL on renderer bridges. */
+void mini_bridge_set_host(struct MiniBridge *b, void *host);
+void *mini_bridge_get_host(struct MiniBridge *b);
+
+/* The process-wide MiniIPC registry pointer (set by mini_ipc_install). Lets
+   IPC native functions reach the shared mailbox from any bridge. */
+void  mini_bridge_set_ipc(struct MiniBridge *b, void *ipc);
+void *mini_bridge_get_ipc(struct MiniBridge *b);
+
+/* The process-wide MiniProtocol registry pointer (main bridge only) for
+   custom-scheme handlers consulted by BrowserWindow.loadURL. */
+void  mini_bridge_set_proto(struct MiniBridge *b, void *proto);
+void *mini_bridge_get_proto(struct MiniBridge *b);
 
 /* Background worker pool (mini_worker.c) for async fs/fetch. */
 struct MiniWorkerQueue;

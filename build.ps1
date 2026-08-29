@@ -81,7 +81,10 @@ $SOURCES = @(
     "src\mini_shaping.c",
     "src\mini_audio.c",
     "src\mini_native.c",
-    "src\mini_worker.c"
+    "src\mini_worker.c",
+    "src\mini_window.c",
+    "src\mini_ipc.c",
+    "src\mini_protocol.c"
 )
 
 # 5. Library Directories (-L) and Libraries (-l)
@@ -139,7 +142,7 @@ foreach ($item in $qjsSources) {
 
     if ($needCompile) {
         Write-Host "Compiling $($item.Src)..." -ForegroundColor Cyan
-        & $qjsCompiler -target x86_64-w64-windows-gnu -std=c99 -D_GNU_SOURCE -DCONFIG_VERSION="`"2024-01-13`"" -Ilibs\quickjs -O2 -g -gcodeview -c $srcPath -o $objPath
+        & $qjsCompiler -target x86_64-w64-windows-gnu -std=c99 -D_GNU_SOURCE -DENABLE_DUMPS -DCONFIG_VERSION="`"2024-01-13`"" -Ilibs\quickjs -O2 -g -gcodeview -c $srcPath -o $objPath
         if ($LASTEXITCODE -ne 0) {
             Write-Host "QuickJS compilation failed for $($item.Src)" -ForegroundColor Red
             exit 1

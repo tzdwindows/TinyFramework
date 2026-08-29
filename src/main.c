@@ -15,6 +15,10 @@
 #include "mini_events.h"
 #include "mini_js_bridge.h"
 #include "mini_native.h"
+#include "mini_window.h"
+#include "mini_ipc.h"
+#include "mini_protocol.h"
+#include "mini_net.h"
 #include "mini_vfs.h"
 #include "mini_cdp.h"
 #include "mini_diag.h"
@@ -67,10 +71,128 @@ struct MiniApp
     char *page_url;
     char *page_source;
     int loaded;
+
+    /* Multi-window: the list of OS windows. windows[0] is the primary (a thin
+       wrapper aliasing r/doc/bridge/events above); windows[1..N] are secondary
+       renderer windows opened via `new BrowserWindow()`, each owning its own
+       r/doc/bridge/events. next_window_id hands out ids >= 1. */
+    MiniWindow **windows;
+    int n_windows;
+    int cap_windows;
+    int next_window_id;
+    int quitting; /* set when before-quit has fired (avoids double-emit) */
+    MiniIPC *ipc; /* process-wide IPC registry (main + every renderer) */
+    MiniProtocol *proto; /* process-wide custom-scheme registry (main ctx) */
 #endif
 };
 
 int mini_app_mode(void) { return MINI_MODE_CUSTOM ? 1 : 0; }
+
+/* ---- window-list accessors (struct MiniApp is private to this TU; these
+ * let mini_window.c manage windows without seeing the struct) ----------- */
+MiniWindow **mini_app_windows(MiniApp *app, int *n_out)
+{
+#if MINI_MODE_CUSTOM
+    if (n_out)
+        *n_out = app ? app->n_windows : 0;
+    return app ? app->windows : NULL;
+#else
+    if (n_out) *n_out = 0;
+    return NULL;
+#endif
+}
+
+void mini_app_add_window(MiniApp *app, MiniWindow *mw)
+{
+#if MINI_MODE_CUSTOM
+    if (!app || !mw)
+        return;
+    if (app->n_windows >= app->cap_windows)
+    {
+        int nc = app->cap_windows ? app->cap_windows * 2 : 8;
+        MiniWindow **nw = (MiniWindow **)realloc(app->windows, (size_t)nc * sizeof(*nw));
+        if (!nw)
+            return;
+        app->windows = nw;
+        app->cap_windows = nc;
+    }
+    app->windows[app->n_windows++] = mw;
+#else
+    (void)app; (void)mw;
+#endif
+}
+
+int mini_app_next_window_id(MiniApp *app)
+{
+#if MINI_MODE_CUSTOM
+    if (!app)
+        return 0;
+    if (app->next_window_id == 0)
+        app->next_window_id = 1; /* 0 is the primary */
+    return app->next_window_id++;
+#else
+    (void)app;
+    return 0;
+#endif
+}
+
+void mini_app_remove_window(MiniApp *app, MiniWindow *mw)
+{
+#if MINI_MODE_CUSTOM
+    if (!app || !mw)
+        return;
+    for (int i = 0; i < app->n_windows; i++)
+    {
+        if (app->windows[i] == mw)
+        {
+            /* compact: shift the tail down */
+            for (int j = i; j < app->n_windows - 1; j++)
+                app->windows[j] = app->windows[j + 1];
+            app->n_windows--;
+            app->windows[app->n_windows] = NULL;
+            return;
+        }
+    }
+#else
+    (void)app; (void)mw;
+#endif
+}
+
+/* The host's main (process) bridge — used by mini_native.c (BrowserWindow
+ * event dispatch / finalizer) to reach the main context. struct MiniApp is
+ * private to this TU. */
+MiniBridge *mini_app_main_bridge(MiniApp *app)
+{
+#if MINI_MODE_CUSTOM
+    return app ? app->bridge : NULL;
+#else
+    (void)app;
+    return NULL;
+#endif
+}
+
+/* The process-wide MiniIPC registry (opaque; mini_window.c installs it on
+ * each secondary renderer bridge). Returns NULL in non-CUSTOM mode. */
+void *mini_app_ipc(MiniApp *app)
+{
+#if MINI_MODE_CUSTOM
+    return app ? app->ipc : NULL;
+#else
+    (void)app;
+    return NULL;
+#endif
+}
+
+/* The process-wide MiniProtocol registry (custom-scheme handlers). */
+void *mini_app_proto(MiniApp *app)
+{
+#if MINI_MODE_CUSTOM
+    return app ? app->proto : NULL;
+#else
+    (void)app;
+    return NULL;
+#endif
+}
 
 /* ------------------------------------------------------------------ */
 /* File loader (tiny, no deps)                                         */
@@ -210,72 +332,70 @@ static void glfw_to_keycode(int key, const char **ks, const char **cs)
     *cs = "Unidentified";
 }
 
-/* GLFW key callback -> diagnostics hotkey (F12 / Ctrl+Shift+I) + JS key events */
+/* Multi-window input routing: every GLFW window's user pointer is its
+ * MiniWindow*. Each callback recovers it, then derives local aliases for that
+ * window's events/doc/bridge/renderer. CDP/diag are primary-only (gated on
+ * mw->is_primary) so a secondary window never touches the primary's debugger.
+ * g_mods / g_input_dirty stay process-global: the engine is single-threaded
+ * and the idle gate only needs to know "did ANY window get input this frame". */
 static void glfw_key_cb(GLFWwindow *win, int key, int scancode, int action,
                         int mods)
 {
     (void)scancode;
-    MiniApp *app = (MiniApp *)glfwGetWindowUserPointer(win);
+    MiniWindow *mw = (MiniWindow *)glfwGetWindowUserPointer(win);
+    if (!mw) return;
+    MiniApp *app = mw->app;
+    MiniEventState *events = mw->events;
+    MiniBridge *bridge = mw->bridge;
+    MiniCDP *cdp = mw->is_primary ? app->cdp : NULL;
+    MiniDiag *diag = mw->is_primary ? app->diag : NULL;
     g_mods = mods;
     g_input_dirty = 1; /* key events may change :focus / drive input */
-    /* F12: toggle the in-engine DevTools overlay (before dispatching the key
-       to the page so the page can't swallow it). */
-    if (app && app->bridge && action == GLFW_PRESS && key == GLFW_KEY_F12)
+    /* F12: toggle the in-engine DevTools overlay (primary only). */
+    if (bridge && action == GLFW_PRESS && key == GLFW_KEY_F12 && mw->is_primary)
     {
         printf("open devtools\n");
-        mini_devtools_toggle(app->bridge);
+        mini_devtools_toggle(bridge);
     }
-    if (app && app->bridge && action == GLFW_PRESS && key == GLFW_KEY_ESCAPE)
+    if (bridge && action == GLFW_PRESS && key == GLFW_KEY_ESCAPE)
     {
-        if (mini_bridge_is_pointer_locked(app->bridge))
-        {
-            mini_bridge_unlock_pointer(app->bridge);
-        }
+        if (mini_bridge_is_pointer_locked(bridge))
+            mini_bridge_unlock_pointer(bridge);
     }
-    if (app && app->diag && (action == GLFW_PRESS || action == GLFW_REPEAT))
-        mini_diag_key(app->diag, key, mods);
-    if (app && app->events &&
+    if (diag && (action == GLFW_PRESS || action == GLFW_REPEAT))
+        mini_diag_key(diag, key, mods);
+    if (events &&
         (action == GLFW_PRESS || action == GLFW_REPEAT || action == GLFW_RELEASE))
     {
         const char *ks, *cs;
         glfw_to_keycode(key, &ks, &cs);
         const char *type = (action == GLFW_RELEASE) ? "keyup" : "keydown";
-        mini_events_handle_key(app->events, type, ks, cs, key, mods,
+        mini_events_handle_key(events, type, ks, cs, key, mods,
                                action == GLFW_REPEAT);
-        /* keypress (deprecated but still common) fires on press for keys that
-           produce a single character. */
         if (action == GLFW_PRESS && ks[0] && !ks[1] && ks[0] != ' ')
-            mini_events_handle_key(app->events, "keypress", ks, cs, key, mods, 0);
+            mini_events_handle_key(events, "keypress", ks, cs, key, mods, 0);
         else if (action == GLFW_PRESS && key == GLFW_KEY_SPACE)
-            mini_events_handle_key(app->events, "keypress", " ", "Space", key, mods, 0);
+            mini_events_handle_key(events, "keypress", " ", "Space", key, mods, 0);
     }
 }
 
-/* GLFW char callback -> Unicode text input. The physical key callback only
-   carries A-Z/0-9/named keys, so punctuation and shifted chars never reached
-   a focused <input>/<textarea>. This delivers the OS-layout-resolved code
-   point, which mini_events_handle_char appends to the focused control's
-   value (and respects a preceding keydown's preventDefault). */
 static void glfw_char_cb(GLFWwindow *win, unsigned int codepoint)
 {
-    MiniApp *app = (MiniApp *)glfwGetWindowUserPointer(win);
+    MiniWindow *mw = (MiniWindow *)glfwGetWindowUserPointer(win);
+    if (!mw) return;
     g_input_dirty = 1; /* text input needs a fresh frame to show the char */
-    if (app && app->events)
-        mini_events_handle_char(app->events, codepoint);
+    if (mw->events)
+        mini_events_handle_char(mw->events, codepoint);
 }
 
-/* Caret-moved -> reposition the OS IME composition + candidate window so
-   Chinese/Japanese/Korean input commits at the insertion point. The events
-   layer reports the caret in document framebuffer pixels; IMM wants client
-   pixels of the window, so we divide by the fb/window scale. */
 #if MINI_MODE_CUSTOM && defined(_WIN32)
 static void caret_ime_cb(struct MiniNode *n, float x, float y, float h, void *ud)
 {
     (void)n;
-    MiniApp *app = (MiniApp *)ud;
-    if (!app || !app->r)
+    MiniWindow *mw = (MiniWindow *)ud;
+    if (!mw || !mw->r)
         return;
-    GLFWwindow *win = (GLFWwindow *)app->r->gpu.window_handle;
+    GLFWwindow *win = (GLFWwindow *)mw->r->gpu.window_handle;
     if (!win)
         return;
     HWND hwnd = glfwGetWin32Window(win);
@@ -313,19 +433,16 @@ static void caret_ime_cb(struct MiniNode *n, float x, float y, float h, void *ud
 #endif
 
 #if MINI_MODE_CUSTOM
-/* Copy the currently selected text to the OS clipboard (Ctrl+C). */
 static void copy_clipboard_cb(MiniEventState *st, const char *text, void *ud)
 {
     (void)st;
-    MiniApp *app = (MiniApp *)ud;
-    if (!app || !app->r || !app->r->gpu.window_handle || !text || !text[0])
+    MiniWindow *mw = (MiniWindow *)ud;
+    if (!mw || !mw->r || !mw->r->gpu.window_handle || !text || !text[0])
         return;
-    glfwSetClipboardString((GLFWwindow *)app->r->gpu.window_handle, text);
+    glfwSetClipboardString((GLFWwindow *)mw->r->gpu.window_handle, text);
 }
 #endif
 
-/* window->framebuffer pixel scale (for high-DPI: cursor is in window px,
-   layout/abs coords are in framebuffer px). */
 static void glfw_win_to_fb(GLFWwindow *win, double wx, double wy,
                            float *fx, float *fy)
 {
@@ -343,36 +460,33 @@ static GLFWcursor *g_cursor_ibeam = NULL;
 static GLFWcursor *g_cursor_hand = NULL;
 static GLFWcursor *g_cursor_crosshair = NULL;
 
-static void update_cursor_icon(GLFWwindow *win, MiniApp *app, float fx, float fy)
+static void update_cursor_icon(GLFWwindow *win, MiniWindow *mw, float fx, float fy)
 {
-    if (!win || !app || !app->doc) return;
+    if (!win || !mw || !mw->doc) return;
     if (!g_cursor_arrow) g_cursor_arrow = glfwCreateStandardCursor(GLFW_ARROW_CURSOR);
     if (!g_cursor_ibeam) g_cursor_ibeam = glfwCreateStandardCursor(GLFW_IBEAM_CURSOR);
     if (!g_cursor_hand) g_cursor_hand = glfwCreateStandardCursor(GLFW_HAND_CURSOR);
     if (!g_cursor_crosshair) g_cursor_crosshair = glfwCreateStandardCursor(GLFW_CROSSHAIR_CURSOR);
 
-    /* Check scrollbar hover */
-    int fw = app->r ? app->r->gpu.width : 1280;
-    if (fx >= (float)fw - 14.0f && app->doc->max_scroll_y > 0.0f)
+    int fw = mw->r ? mw->r->gpu.width : 1280;
+    if (fx >= (float)fw - 14.0f && mw->doc->max_scroll_y > 0.0f)
     {
         glfwSetCursor(win, g_cursor_arrow);
         return;
     }
 
-    struct MiniNode *n = mini_dom_hit_test_doc(app->doc, fx, fy);
+    struct MiniNode *n = mini_dom_hit_test_doc(mw->doc, fx, fy);
     if (!n)
     {
         glfwSetCursor(win, g_cursor_arrow);
         return;
     }
 
-    /* 1. Explicit CSS cursor property */
     if (n->style.cursor == 1) { glfwSetCursor(win, g_cursor_hand); return; }
     if (n->style.cursor == 2) { glfwSetCursor(win, g_cursor_ibeam); return; }
     if (n->style.cursor == 6) { glfwSetCursor(win, g_cursor_crosshair); return; }
     if (n->style.cursor == 3 || n->style.cursor == 4) { glfwSetCursor(win, g_cursor_hand); return; }
 
-    /* 2. Check interactive / pointer elements */
     for (struct MiniNode *cur = n; cur; cur = cur->parent)
     {
         if (cur->tag)
@@ -410,7 +524,6 @@ static void update_cursor_icon(GLFWwindow *win, MiniApp *app, float fx, float fy
         }
     }
 
-    /* 3. Check selectable text vs unselectable elements */
     int is_text = (n->type == MN_TEXT_NODE) || (n->text && n->text[0]);
     if (!is_text && n->tag)
     {
@@ -428,7 +541,6 @@ static void update_cursor_icon(GLFWwindow *win, MiniApp *app, float fx, float fy
 
     if (is_text)
     {
-        /* Check unselectable filters */
         int unselectable = 0;
         for (struct MiniNode *cur = n; cur; cur = cur->parent)
         {
@@ -461,123 +573,126 @@ static void update_cursor_icon(GLFWwindow *win, MiniApp *app, float fx, float fy
 
 static void glfw_cursor_cb(GLFWwindow *win, double x, double y)
 {
-    MiniApp *app = (MiniApp *)glfwGetWindowUserPointer(win);
-    if (!app)
-        return;
+    MiniWindow *mw = (MiniWindow *)glfwGetWindowUserPointer(win);
+    if (!mw) return;
+    MiniApp *app = mw->app;
+    MiniCDP *cdp = mw->is_primary ? app->cdp : NULL;
     float fx, fy;
     glfw_win_to_fb(win, x, y, &fx, &fy);
 
-    update_cursor_icon(win, app, fx, fy);
+    update_cursor_icon(win, mw, fx, fy);
 
-    if (app->cdp && mini_cdp_is_inspect_mode(app->cdp) && app->doc)
+    if (cdp && mini_cdp_is_inspect_mode(cdp) && mw->doc)
     {
-        mini_dom_assign_node_ids(app->doc);
-        struct MiniNode *n = mini_dom_hit_test_doc(app->doc, fx, fy);
+        mini_dom_assign_node_ids(mw->doc);
+        struct MiniNode *n = mini_dom_hit_test_doc(mw->doc, fx, fy);
         if (n && n->cdp_node_id > 0)
         {
-            mini_cdp_highlight_node(app->cdp, n->cdp_node_id);
-            app->doc->dirty = 1;
+            mini_cdp_highlight_node(cdp, n->cdp_node_id);
+            mw->doc->dirty = 1;
         }
     }
 
-    if (app->events)
+    if (mw->events)
     {
         g_input_dirty = 1; /* hover tracking needs a fresh frame */
-        mini_events_handle_mouse_move(app->events, fx, fy, g_mods);
+        mini_events_handle_mouse_move(mw->events, fx, fy, g_mods);
     }
 }
 
 static void glfw_mouse_cb(GLFWwindow *win, int button, int action, int mods)
 {
-    MiniApp *app = (MiniApp *)glfwGetWindowUserPointer(win);
-    if (!app)
-        return;
+    MiniWindow *mw = (MiniWindow *)glfwGetWindowUserPointer(win);
+    if (!mw) return;
+    MiniApp *app = mw->app;
+    MiniCDP *cdp = mw->is_primary ? app->cdp : NULL;
     double x, y;
     glfwGetCursorPos(win, &x, &y);
     g_mods = mods;
     float fx, fy;
     glfw_win_to_fb(win, x, y, &fx, &fy);
 
-    if (app->cdp && mini_cdp_is_inspect_mode(app->cdp) && action == GLFW_PRESS && button == GLFW_MOUSE_BUTTON_LEFT)
+    if (cdp && mini_cdp_is_inspect_mode(cdp) && action == GLFW_PRESS && button == GLFW_MOUSE_BUTTON_LEFT)
     {
-        if (app->doc)
+        if (mw->doc)
         {
-            mini_dom_assign_node_ids(app->doc);
-            struct MiniNode *n = mini_dom_hit_test_doc(app->doc, fx, fy);
+            mini_dom_assign_node_ids(mw->doc);
+            struct MiniNode *n = mini_dom_hit_test_doc(mw->doc, fx, fy);
             if (n && n->cdp_node_id > 0)
             {
-                mini_cdp_inspect_node(app->cdp, n->cdp_node_id);
-                app->doc->dirty = 1;
+                mini_cdp_inspect_node(cdp, n->cdp_node_id);
+                mw->doc->dirty = 1;
                 return; /* consume click for inspection */
             }
         }
     }
 
-    if (app->events)
+    if (mw->events)
     {
         g_input_dirty = 1; /* click/press may change :active/:focus */
-        mini_events_handle_mouse_button(app->events, button, action, fx, fy, mods);
+        mini_events_handle_mouse_button(mw->events, button, action, fx, fy, mods);
     }
 }
 
 static void glfw_scroll_cb(GLFWwindow *win, double dx, double dy)
 {
-    MiniApp *app = (MiniApp *)glfwGetWindowUserPointer(win);
-    if (!app || !app->events)
+    MiniWindow *mw = (MiniWindow *)glfwGetWindowUserPointer(win);
+    if (!mw || !mw->events)
         return;
     double x, y;
     glfwGetCursorPos(win, &x, &y);
     g_input_dirty = 1; /* wheel scrolls the page */
     float fx, fy;
     glfw_win_to_fb(win, x, y, &fx, &fy);
-    mini_events_handle_wheel(app->events, fx, fy, (float)dx, (float)dy, g_mods);
+    mini_events_handle_wheel(mw->events, fx, fy, (float)dx, (float)dy, g_mods);
 }
 
-/* OS file/text drop: forward the dropped paths as an HTML5 `drop` event on the
-   element under the cursor (paths are newline-joined in the DataTransfer
-   text/plain slot). */
 static void glfw_drop_cb(GLFWwindow *win, int count, const char **paths)
 {
-    MiniApp *app = (MiniApp *)glfwGetWindowUserPointer(win);
-    if (!app || !app->events || count <= 0)
+    MiniWindow *mw = (MiniWindow *)glfwGetWindowUserPointer(win);
+    if (!mw || !mw->events || count <= 0)
         return;
     double x, y;
     glfwGetCursorPos(win, &x, &y);
     g_input_dirty = 1;
     float fx, fy;
     glfw_win_to_fb(win, x, y, &fx, &fy);
-    mini_events_handle_drop_files(app->events, paths, count, fx, fy);
+    mini_events_handle_drop_files(mw->events, paths, count, fx, fy);
 }
 
 static void glfw_fb_size_cb(GLFWwindow *win, int w, int h)
 {
-    MiniApp *app = (MiniApp *)glfwGetWindowUserPointer(win);
-    if (!app || !app->events)
+    MiniWindow *mw = (MiniWindow *)glfwGetWindowUserPointer(win);
+    if (!mw || !mw->events)
         return;
     g_input_dirty = 1; /* resize relayouts the page */
-    mini_events_handle_resize(app->events, w, h);
+    mini_events_handle_resize(mw->events, w, h);
+    /* dispatch the BrowserWindow 'resize' JS event (safe: GLFW callbacks fire
+       during glfwPollEvents, when no JS is executing) */
+    if (!mw->is_primary)
+        mini_window_emit_event(mw, "resize");
 }
 
 static void glfw_window_focus_cb(GLFWwindow *win, int focused)
 {
-    MiniApp *app = (MiniApp *)glfwGetWindowUserPointer(win);
-    if (!app || !app->events)
+    MiniWindow *mw = (MiniWindow *)glfwGetWindowUserPointer(win);
+    if (!mw || !mw->events)
         return;
     if (!focused)
     {
-        mini_events_release_capture(app->events);
+        mini_events_release_capture(mw->events);
         g_input_dirty = 1;
     }
 }
 
 static void glfw_cursor_enter_cb(GLFWwindow *win, int entered)
 {
-    MiniApp *app = (MiniApp *)glfwGetWindowUserPointer(win);
-    if (!app || !app->events)
+    MiniWindow *mw = (MiniWindow *)glfwGetWindowUserPointer(win);
+    if (!mw || !mw->events)
         return;
     if (!entered)
     {
-        mini_events_release_capture(app->events);
+        mini_events_release_capture(mw->events);
         g_input_dirty = 1;
     }
 }
@@ -585,10 +700,107 @@ static void glfw_cursor_enter_cb(GLFWwindow *win, int entered)
 static void gesture_cb(MiniEventState *st, const char *action_js, void *ud)
 {
     (void)st;
-    MiniApp *app = (MiniApp *)ud;
-    if (app && app->bridge && action_js && action_js[0])
+    MiniWindow *mw = (MiniWindow *)ud;
+    if (mw && mw->bridge && action_js && action_js[0])
     {
-        mini_bridge_eval(app->bridge, action_js, strlen(action_js), "<gesture>");
+        mini_bridge_eval(mw->bridge, action_js, strlen(action_js), "<gesture>");
+    }
+}
+
+/* Install the GLFW input callbacks + per-window user pointer on a window so
+ * input routes to its MiniWindow (and its events/doc/bridge). Also wires the
+ * event-state side callbacks (caret IME / copy / gesture) with the MiniWindow
+ * as userdata. Called for both the primary (from mini_app_create via
+ * mini_window_register_primary) and every secondary window. */
+void mini_window_install_callbacks(MiniWindow *mw)
+{
+    if (!mw || !mw->win)
+        return;
+    GLFWwindow *win = (GLFWwindow *)mw->win;
+    glfwSetWindowUserPointer(win, mw);
+    glfwSetKeyCallback(win, glfw_key_cb);
+    glfwSetCharCallback(win, glfw_char_cb);
+    glfwSetCursorPosCallback(win, glfw_cursor_cb);
+    glfwSetMouseButtonCallback(win, glfw_mouse_cb);
+    glfwSetScrollCallback(win, glfw_scroll_cb);
+    glfwSetFramebufferSizeCallback(win, glfw_fb_size_cb);
+    glfwSetWindowFocusCallback(win, glfw_window_focus_cb);
+    glfwSetCursorEnterCallback(win, glfw_cursor_enter_cb);
+    glfwSetDropCallback(win, glfw_drop_cb);
+    if (mw->events)
+    {
+#if MINI_MODE_CUSTOM && defined(_WIN32)
+        mini_events_set_caret_cb(mw->events, caret_ime_cb, mw);
+#endif
+#if MINI_MODE_CUSTOM
+        mini_events_set_copy_cb(mw->events, copy_clipboard_cb, mw);
+#endif
+        mini_events_set_gesture_cb(mw->events, gesture_cb, mw);
+    }
+}
+
+/* Load the default system + local TrueType font chain onto a renderer so any
+ * window renders anti-aliased text + emoji. Extracted from the old primary
+ * init so secondary windows reuse the exact same chain. */
+void mini_window_load_default_fonts(MiniRenderer *r)
+{
+    if (!r)
+        return;
+    char win_dir[512] = {0};
+#if defined(_WIN32)
+    if (!GetWindowsDirectoryA(win_dir, sizeof(win_dir)))
+    {
+        const char *w = getenv("WINDIR");
+        if (w)
+            snprintf(win_dir, sizeof(win_dir), "%s", w);
+        else
+        {
+            const char *drv = getenv("SystemDrive");
+            snprintf(win_dir, sizeof(win_dir), "%s/Windows", drv ? drv : "");
+        }
+    }
+#endif
+    for (char *p = win_dir; *p; p++) if (*p == '\\') *p = '/';
+
+    const char *pri_names[] = {
+        "msyh.ttc", "msyh.ttf", "simhei.ttf", "simsun.ttc", "arial.ttf"
+    };
+    const char *local_cands[] = {
+        "AiDianFengYaHeiChangTi.ttf",
+        "build/AiDianFengYaHeiChangTi.ttf",
+        "assets/font.ttf"
+    };
+
+    int pri_loaded = 0;
+    if (win_dir[0])
+    {
+        char pbuf[576];
+        for (size_t i = 0; i < sizeof(pri_names) / sizeof(pri_names[0]); i++)
+        {
+            snprintf(pbuf, sizeof(pbuf), "%s/Fonts/%s", win_dir, pri_names[i]);
+            if (mini_renderer_load_font(r, pbuf) == 0)
+            {
+                pri_loaded = 1;
+                break;
+            }
+        }
+    }
+    if (!pri_loaded)
+    {
+        for (size_t i = 0; i < sizeof(local_cands) / sizeof(local_cands[0]); i++)
+        {
+            if (mini_renderer_load_font(r, local_cands[i]) == 0)
+            {
+                pri_loaded = 1;
+                break;
+            }
+        }
+    }
+    if (win_dir[0])
+    {
+        char pbuf[576];
+        snprintf(pbuf, sizeof(pbuf), "%s/Fonts/seguiemj.ttf", win_dir);
+        mini_renderer_load_fallback_font(r, pbuf);
     }
 }
 
@@ -610,78 +822,10 @@ MiniResult mini_app_create(const MiniWindowConfig *cfg, MiniApp **out)
         return MINI_ERR_GPU;
     }
 
-    /* 1b) Load the bundled TrueType font (AiDianFengYaHeiChangTi) so text
-       renders anti-aliased and supports emoji (�? + CJK, instead of the
-       built-in 5x7 bitmap font. The TTF ships next to the exe / in the
-    /* 1b) Dynamically load TrueType/OpenType font chain (System fonts + relative fallbacks) */
-    {
-        char win_dir[512] = {0};
-#if defined(_WIN32)
-        if (!GetWindowsDirectoryA(win_dir, sizeof(win_dir)))
-        {
-            const char *w = getenv("WINDIR");
-            if (w)
-                snprintf(win_dir, sizeof(win_dir), "%s", w);
-            else
-            {
-                const char *drv = getenv("SystemDrive");
-                snprintf(win_dir, sizeof(win_dir), "%s/Windows", drv ? drv : "");
-            }
-        }
-#endif
-        for (char *p = win_dir; *p; p++) if (*p == '\\') *p = '/';
-
-        const char *pri_names[] = {
-            "msyh.ttc", "msyh.ttf", "simhei.ttf", "simsun.ttc", "arial.ttf"
-        };
-        const char *local_cands[] = {
-            "AiDianFengYaHeiChangTi.ttf",
-            "build/AiDianFengYaHeiChangTi.ttf",
-            "assets/font.ttf"
-        };
-
-        int pri_loaded = 0;
-        if (win_dir[0])
-        {
-            char pbuf[576];
-            for (size_t i = 0; i < sizeof(pri_names) / sizeof(pri_names[0]); i++)
-            {
-                snprintf(pbuf, sizeof(pbuf), "%s/Fonts/%s", win_dir, pri_names[i]);
-                if (mini_renderer_load_font(app->r, pbuf) == 0)
-                {
-                    fprintf(stderr, "[app] Primary font loaded: %s\n", pbuf);
-                    pri_loaded = 1;
-                    break;
-                }
-            }
-        }
-        if (!pri_loaded)
-        {
-            for (size_t i = 0; i < sizeof(local_cands) / sizeof(local_cands[0]); i++)
-            {
-                if (mini_renderer_load_font(app->r, local_cands[i]) == 0)
-                {
-                    fprintf(stderr, "[app] Primary font loaded (local): %s\n", local_cands[i]);
-                    pri_loaded = 1;
-                    break;
-                }
-            }
-        }
-        if (!pri_loaded)
-        {
-            fprintf(stderr, "[app] Primary font not found; using 5x7 bitmap fallback\n");
-        }
-        /* Load emoji fallback font for full Unicode/Emoji symbol support */
-        if (win_dir[0])
-        {
-            char pbuf[576];
-            snprintf(pbuf, sizeof(pbuf), "%s/Fonts/seguiemj.ttf", win_dir);
-            if (mini_renderer_load_fallback_font(app->r, pbuf) == 0)
-            {
-                fprintf(stderr, "[app] Emoji fallback font loaded: %s\n", pbuf);
-            }
-        }
-    }
+    /* 1b) Load the default TrueType/OpenType font chain (system fonts + local
+       fallbacks + emoji) so text renders anti-aliased with CJK + emoji
+       support. Shared with secondary windows via mini_window_load_default_fonts. */
+    mini_window_load_default_fonts(app->r);
 
     /* 2) DOM document (self-written scene graph) */
     app->doc = mini_doc_create();
@@ -701,6 +845,23 @@ MiniResult mini_app_create(const MiniWindowConfig *cfg, MiniApp **out)
         free(app);
         return MINI_ERR_JS;
     }
+    /* Wire the host (this MiniApp) onto the main bridge so the BrowserWindow
+       constructor (which runs in this main context) can reach the host to
+       create secondary windows via mini_window_create_secondary. */
+    mini_bridge_set_host(app->bridge, app);
+
+    /* Create the process-wide IPC registry and install ipcMain on this (main)
+       context. Each secondary renderer gets ipcRenderer installed in
+       mini_window_create_secondary. */
+    app->ipc = mini_ipc_create();
+    if (app->ipc)
+        mini_ipc_install(app->ipc, app->bridge, 1, 0);
+
+    /* Create the custom-scheme protocol registry and install the `protocol`
+       JS surface on this main context. Consulted by BrowserWindow.loadURL. */
+    app->proto = mini_protocol_create();
+    if (app->proto)
+        mini_protocol_install(app->proto, app);
 
     /* diagnostics (no CDP yet �?enable_cdp attaches it) */
     app->diag = mini_diag_start(app->bridge, app->r, app->doc, NULL);
@@ -714,32 +875,12 @@ MiniResult mini_app_create(const MiniWindowConfig *cfg, MiniApp **out)
     /* Install the in-engine DevTools bundle (toggled by F12) into the bridge's
        JS context. Defines window.__miniDT; the panel DOM is built on open(). */
     mini_devtools_install(app->bridge);
-    /* Forward caret moves to the OS IME so the candidate window follows the
-       insertion point (no-op platform stub is used where the IMM API isn't
-       available). */
-#if MINI_MODE_CUSTOM && defined(_WIN32)
-    mini_events_set_caret_cb(app->events, caret_ime_cb, app);
-#endif
 
-#if MINI_MODE_CUSTOM
-    /* Ctrl+C -> GLFW clipboard. (Works on all GLFW backends.) */
-    mini_events_set_copy_cb(app->events, copy_clipboard_cb, app);
-#endif
-    mini_events_set_gesture_cb(app->events, gesture_cb, app);
-    if (app->r->gpu.window_handle)
-    {
-        GLFWwindow *win = (GLFWwindow *)app->r->gpu.window_handle;
-        glfwSetWindowUserPointer(win, app);
-        glfwSetKeyCallback(win, glfw_key_cb);
-        glfwSetCharCallback(win, glfw_char_cb);
-        glfwSetCursorPosCallback(win, glfw_cursor_cb);
-        glfwSetMouseButtonCallback(win, glfw_mouse_cb);
-        glfwSetScrollCallback(win, glfw_scroll_cb);
-        glfwSetFramebufferSizeCallback(win, glfw_fb_size_cb);
-        glfwSetWindowFocusCallback(win, glfw_window_focus_cb);
-        glfwSetCursorEnterCallback(win, glfw_cursor_enter_cb);
-        glfwSetDropCallback(win, glfw_drop_cb);
-    }
+    /* Register the primary window (id 0) as a MiniWindow wrapping r/doc/bridge/
+       events, and install all GLFW input callbacks + the per-window user
+       pointer so input routes to this window (and, for future secondary
+       windows, to each one's own MiniWindow). */
+    mini_window_register_primary(app, app->r, app->doc, app->bridge, app->events);
 
     *out = app;
     return MINI_OK;
@@ -790,6 +931,9 @@ MiniResult mini_app_load_encrypted(MiniApp *app,
 {
     if (!app || !bundle)
         return MINI_ERR_ASSET;
+    /* Loading from an encrypted VFS bundle => the app is "packaged"
+       (app.isPackaged returns true). */
+    mini_native_set_packaged(1);
     uint8_t *pt = NULL;
     size_t pt_len = 0;
     /* AAD = the 4-byte magic tag so a bundle swapped between source/bytecode
@@ -865,6 +1009,14 @@ MiniResult mini_app_run(MiniApp *app)
     {
         glfwPollEvents();
 
+        /* The primary is the active window at the top of each iteration: switch
+           the process-wide active doc/bridge to the primary so the primary
+           viewport/tick/pump/render phases below operate on the primary's
+           document. (Secondary windows switch these per-window during their
+           own render phase, then restore the primary here next iteration.) */
+        mini_dom_set_active_doc(app->doc);
+        mini_bridge_set_active(app->bridge);
+
         /* Service CDP every iteration (cheap, non-blocking) so a static page
            still answers chrome://inspect / Runtime.evaluate — the idle gate
            below would otherwise skip the post-render poll. */
@@ -921,6 +1073,26 @@ MiniResult mini_app_run(MiniApp *app)
            DOM or call requestAnimationFrame, flipping the gate to render
            on the next iteration). Cheap when the queue is empty. */
         mini_bridge_pump(app->bridge);
+        if (app->ipc)
+            mini_ipc_dispatch(app->ipc, app->bridge, 0); /* drain renderer→main */
+        /* pump any second-instance relays (emit 'second-instance' to app.on) */
+        mini_app_pump_second_instance(app);
+        /* pump completed net.request fetches (emit response/data/end) */
+        mini_net_api_pump(app);
+
+        /* Multi-window: pump every secondary window's bridge too, so a static
+           primary still services secondary setTimeout / Promise / IPC. */
+        {
+            int nsec = 0;
+            MiniWindow **secs = mini_app_windows(app, &nsec);
+            for (int i = 0; i < nsec; i++)
+                if (secs[i] && !secs[i]->is_primary)
+                {
+                    mini_window_pump(secs[i]);
+                    if (app->ipc)
+                        mini_ipc_dispatch(app->ipc, secs[i]->bridge, secs[i]->id);
+                }
+        }
 
         /* ---- idle gate ------------------------------------------------
            Skip the expensive restyle + layout + render + flush + swap
@@ -928,12 +1100,20 @@ MiniResult mini_app_run(MiniApp *app)
            old behaviour of doing a full-pipeline spin every frame even on
            a fully static page (the dominant CPU drain). We still tick
            effects + pump jobs above, so timers/anim stay responsive. */
+        int sec_need = 0; /* any secondary window needs a frame this iter? */
+        {
+            int nsec = 0;
+            MiniWindow **secs = mini_app_windows(app, &nsec);
+            for (int i = 0; i < nsec; i++)
+                if (mini_window_needs_frame(secs[i])) { sec_need = 1; break; }
+        }
         int need_frame = g_input_dirty || viewport_changed ||
                          mini_bridge_pending_raf(app->bridge) > 0 ||
                          app->doc->dirty || app->doc->active_effects ||
                          emu_active || /* an active CDP metrics override */
                          (g_frame_cap && g_frames < g_frame_cap) ||
                          mini_events_has_text_focus(app->events) ||
+                         sec_need ||
                          (app->cdp && (mini_cdp_has_overlay(app->cdp) || mini_cdp_is_inspect_mode(app->cdp))); /* caret blink or CDP overlay/inspect */
         if (!need_frame)
         {
@@ -1105,6 +1285,27 @@ MiniResult mini_app_run(MiniApp *app)
         mini_renderer_end_frame(app->r); /* swap (incl. WebGL) */
         mini_bridge_pump(app->bridge);   /* drain rAF-queued microtasks */
 
+        /* Multi-window: render each open secondary window in its own GL context
+           (the secondary path switches the active doc/bridge/renderer to that
+           window), then restore the primary context + active globals so the
+           next iteration's primary phase is correct. */
+        {
+            int nsec = 0;
+            MiniWindow **secs = mini_app_windows(app, &nsec);
+            for (int i = 0; i < nsec; i++)
+            {
+                MiniWindow *mw = secs[i];
+                if (!mw || mw->is_primary || mw->closing)
+                    continue;
+                mini_window_render_frame(mw, now * 1000.0, dt);
+            }
+            glfwMakeContextCurrent(win);
+            mini_dom_set_active_doc(app->doc);
+            mini_bridge_set_active(app->bridge);
+        }
+        /* destroy secondary windows that closed this frame (compact the list) */
+        mini_window_sweep_closed(app);
+
         /* this frame's accumulated dirty has been consumed by the render */
         app->doc->dirty = 0;
 
@@ -1150,6 +1351,16 @@ MiniResult mini_app_run(MiniApp *app)
             }
         }
     }
+
+    /* App lifecycle: the run loop is exiting (primary closed / app.quit()).
+       Emit 'before-quit' then 'window-all-closed' (no open windows remain).
+       before-quit is advisory here (not preventable in this build). */
+    if (!app->quitting)
+    {
+        app->quitting = 1;
+        mini_app_emit_event(app, "before-quit");
+        mini_app_emit_event(app, "window-all-closed");
+    }
     return MINI_OK;
 }
 
@@ -1160,20 +1371,79 @@ void mini_app_destroy(MiniApp *app)
     if (!app)
         return;
     mini_audio_shutdown();
-    /* bridge before events: bridge destroy calls mini_events_remove_listener
-       on b->ev, so the event state must outlive the bridge.               */
+    /* Join any in-flight parallel prefetch threads + close the keep-alive pool
+       ONCE (process-global). Must run before any bridge is destroyed so cache
+       writes land; was previously per-bridge, which deadlocked under multi-window. */
+    mini_net_prefetch_shutdown();
+    /* Drain any completed-but-not-yet-pumped net.request results so their
+       ClientRequest JS refs are freed before the runtime is torn down (avoids
+       leaving objects on the GC list → list_empty assertion). */
+    mini_net_api_pump(app);
+#if MINI_MODE_CUSTOM
+    if (app->ipc)
+    {
+        mini_ipc_destroy(app->ipc);
+        app->ipc = NULL;
+    }
+    if (app->proto)
+    {
+        mini_protocol_destroy(app->proto);
+        app->proto = NULL;
+    }
+#endif
+    /* Order matters for the refcounted window model (mirrors ChildProcess):
+       destroy the MAIN bridge FIRST so its GC fires BrowserWindow finalizers,
+       dropping each secondary's JS-wrapper ref. Then drop the window-list ref
+       for every window; when both refs are gone the window is fully freed
+       (its own renderer/document/bridge/event-state). The primary (windows[0])
+       is a thin wrapper (owns_resources==0): its resources are the app's and
+       are freed explicitly below. */
     if (app->cdp)
         mini_cdp_stop(app->cdp);
     if (app->diag)
         mini_diag_stop(app->diag);
+    /* bridge before events: bridge destroy calls mini_events_remove_listener
+       on b->ev, so the event state must outlive the bridge.               */
     if (app->bridge)
-        mini_bridge_destroy(app->bridge);
+        mini_bridge_destroy(app->bridge); /* GC: drops secondary JS refs */
     if (app->events)
         mini_events_state_destroy(app->events);
     if (app->doc)
         mini_doc_destroy(app->doc);
     if (app->r)
         mini_renderer_destroy(app->r);
+#if MINI_MODE_CUSTOM
+    /* Drop the window-list ref for every remaining window (primary + any
+       secondaries whose JS handle was already GC'd above). ref==0 ⇒ free. */
+    if (app->windows)
+    {
+        int n = app->n_windows;
+        MiniWindow **kill = (MiniWindow **)calloc((size_t)(n > 0 ? n : 1), sizeof(*kill));
+        if (kill)
+        {
+            int nk = 0;
+            for (int i = 0; i < n; i++)
+                if (app->windows[i])
+                    kill[nk++] = app->windows[i];
+            for (int i = 0; i < nk; i++)
+            {
+                MiniWindow *mw = kill[i];
+                mw->ref--; /* drop the list ref */
+                if (mw->ref <= 0)
+                    mini_window_destroy(mw);
+            }
+            free(kill);
+        }
+        app->n_windows = 0;
+        free(app->windows);
+        app->windows = NULL;
+    }
+#endif
+    /* GLFW owns the whole window/context pool; terminate it once, after every
+       renderer (primary + secondaries) is gone. mini_renderer_destroy no longer
+       calls glfwTerminate so that destroying one window never tears down the
+       others in a multi-window app. */
+    mini_renderer_terminate_glfw();
     free(app->page_url);
     free(app->page_source);
     free(app);
@@ -1276,6 +1546,13 @@ static void apply_app_icon(MiniApp *app, const char *custom_icon)
 
 int main(int argc, char **argv)
 {
+    /* Send CRT assert()/abort() output to stderr and abort (no blocking GUI
+       popup) so mini_crash's SIGABRT handler can capture it and a test harness
+       can read the QuickJS leak dump off stdout. (Default GUI behaviour shows
+       a modal "Assertion failed!" dialog that hangs the process.) */
+#if defined(_WIN32)
+    _set_error_mode(_OUT_TO_STDERR);
+#endif
     mini_log_init();
     mini_crash_set_version("1.0.0");
     mini_crash_init("tiny_app", "build");

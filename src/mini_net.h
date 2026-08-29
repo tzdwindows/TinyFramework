@@ -86,6 +86,14 @@ void mini_net_prefetch_shutdown(void);
 void mini_net_parse_response_meta(const char *hdrs, size_t hlen,
                                  long *out_cl, int *out_chunked, int *out_close);
 
+/* Process-wide proxy / user-agent overrides (set by session.setProxy /
+   setUserAgent). The proxy is best-effort HTTP forward-proxy only in this
+   build (HTTPS CONNECT is a documented TODO). NULL = no override. */
+void        mini_net_set_proxy(const char *url);
+const char *mini_net_get_proxy(void);
+void        mini_net_set_user_agent(const char *ua);
+const char *mini_net_get_user_agent(void);
+
 #ifdef __cplusplus
 }
 #endif

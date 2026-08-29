@@ -944,16 +944,74 @@ static const char *mini_js_shim =
     "Response.prototype.arrayBuffer = function(){ return __thenable(this._body instanceof ArrayBuffer ? this._body : (this._body ? this._body.buffer || new ArrayBuffer(0) : new ArrayBuffer(0))); };\n"
     "Response.prototype.blob = function(){ return __thenable(new Blob([this._body])); };\n"
     "window.Response = Response; globalThis.Response = Response;\n"
-    "if (typeof URL === 'undefined' || !URL.createObjectURL) {\n"
-    "  function MiniURL(url, base) { if(base){ if(String(url).match(/^[a-zA-Z]+:\\/\\//) || String(url).startsWith('blob:')){ this.href=String(url); } else { this.href=String(base).replace(/\\/[^\\/]*$/, '/') + url; } } else { this.href=String(url); } }\n"
-    "  MiniURL.prototype.toString=function(){ return this.href; };\n"
-    "  MiniURL.createObjectURL=function(blob){ return (blob && typeof __miniCreateObjectURL==='function') ? __miniCreateObjectURL(blob) : ''; };\n"
-    "  MiniURL.revokeObjectURL=function(url){ if(url && typeof __miniRevokeObjectURL==='function') __miniRevokeObjectURL(String(url)); };\n"
-    "  window.URL = MiniURL; globalThis.URL = MiniURL;\n"
-    "} else {\n"
-    "  URL.createObjectURL=function(blob){ return (blob && typeof __miniCreateObjectURL==='function') ? __miniCreateObjectURL(blob) : ''; };\n"
-    "  URL.revokeObjectURL=function(url){ if(url && typeof __miniRevokeObjectURL==='function') __miniRevokeObjectURL(String(url)); };\n"
-    "}\n"
+"if (typeof URL === 'undefined' || !URL.createObjectURL) {\n"
+"  function URLSearchParams(init){\n"
+"    this._d = {};\n"
+"    if (init == null) return;\n"
+"    var self = this;\n"
+"    function add(k,v){ k=String(k); (self._d[k]=self._d[k]||[]).push(String(v)); }\n"
+"    if (typeof init === 'string') {\n"
+"      var s = init.charAt(0)==='?' ? init.substring(1) : init;\n"
+"      var pairs = s.length ? s.split('&') : [];\n"
+"      for (var i=0;i<pairs.length;i++){ var p=pairs[i]; if(!p) continue; var eq=p.indexOf('=');\n"
+"        var k=eq<0?p:p.substring(0,eq); var v=eq<0?'':p.substring(eq+1);\n"
+"        try{ add(decodeURIComponent(k), decodeURIComponent(v)); }catch(e){ add(k,v); } }\n"
+"    } else if (typeof init.forEach === 'function') { init.forEach(function(v,k){ add(k,v); }); }\n"
+"    else if (typeof init === 'object') { for (var k2 in init) if (Object.prototype.hasOwnProperty.call(init,k2)) add(k2, init[k2]); }\n"
+"  }\n"
+"  URLSearchParams.prototype.get=function(k){ var a=this._d[k]; return a?a[0]:null; };\n"
+"  URLSearchParams.prototype.getAll=function(k){ return (this._d[k]||[]).slice(); };\n"
+"  URLSearchParams.prototype.has=function(k){ return !!this._d[k]; };\n"
+"  URLSearchParams.prototype.set=function(k,v){ this._d[k]=[String(v)]; };\n"
+"  URLSearchParams.prototype.append=function(k,v){ (this._d[k]=this._d[k]||[]).push(String(v)); };\n"
+"  URLSearchParams.prototype.delete=function(k){ delete this._d[k]; };\n"
+"  URLSearchParams.prototype.sort=function(){ var keys=Object.keys(this._d).sort(); var nd={}; for(var i=0;i<keys.length;i++) nd[keys[i]]=this._d[keys[i]]; this._d=nd; };\n"
+"  URLSearchParams.prototype.toString=function(){ var out=[]; for(var k in this._d){ this._d[k].forEach(function(v){ out.push(encodeURIComponent(k)+'='+encodeURIComponent(v)); }); } return out.join('&'); };\n"
+"  URLSearchParams.prototype.forEach=function(cb, thisArg){ for(var k in this._d){ this._d[k].forEach(function(v){ cb.call(thisArg, v, k, this); }, this); } };\n"
+"  URLSearchParams.prototype.entries=function(){ var out=[]; this.forEach(function(v,k){ out.push([k,v]); }); var i=0; var it={ next:function(){ return i<out.length?{value:out[i++],done:false}:{value:undefined,done:true}; } }; if(typeof Symbol!=='undefined') it[Symbol.iterator]=function(){ return it; }; return it; };\n"
+"  URLSearchParams.prototype.keys=function(){ var out=[]; this.forEach(function(v,k){ out.push(k); }); var i=0; var it={ next:function(){ return i<out.length?{value:out[i++],done:false}:{value:undefined,done:true}; } }; if(typeof Symbol!=='undefined') it[Symbol.iterator]=function(){ return it; }; return it; };\n"
+"  URLSearchParams.prototype.values=function(){ var out=[]; this.forEach(function(v){ out.push(v); }); var i=0; var it={ next:function(){ return i<out.length?{value:out[i++],done:false}:{value:undefined,done:true}; } }; if(typeof Symbol!=='undefined') it[Symbol.iterator]=function(){ return it; }; return it; };\n"
+"  if (typeof Symbol !== 'undefined' && Symbol.iterator) URLSearchParams.prototype[Symbol.iterator] = URLSearchParams.prototype.entries;\n"
+"  window.URLSearchParams = URLSearchParams; globalThis.URLSearchParams = URLSearchParams;\n"
+"  function MiniURL(url, base){\n"
+"    var u = String(url);\n"
+"    if (base && !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(u)) {\n"
+"      var bb = String(base);\n"
+"      if (u.charAt(0)==='/') { var sl=bb.indexOf('/', bb.indexOf('://')+3); u=(sl<0?bb:bb.substring(0,sl))+u; }\n"
+"      else if (u.substring(0,2)==='//') { var c=bb.indexOf(':'); u=(c<0?'https:':bb.substring(0,c+1))+u; }\n"
+"      else { u = bb.replace(/[^/]*$/,'') + u; }\n"
+"    }\n"
+"    this.href = u;\n"
+"    this.protocol=''; this.host=''; this.hostname=''; this.port=''; this.pathname='/'; this.search=''; this.hash=''; this.origin=''; this.searchParams=null;\n"
+"    var i = u.indexOf('://');\n"
+"    var rest = i>=0 ? u.substring(i+3) : u;\n"
+"    if (i>=0) this.protocol = u.substring(0, i+1);\n"
+"    var h = rest.indexOf('/');\n"
+"    var auth = h<0 ? rest : rest.substring(0, h);\n"
+"    this.host = auth;\n"
+"    var ci = auth.indexOf(':');\n"
+"    this.hostname = ci<0 ? auth : auth.substring(0, ci);\n"
+"    this.port = ci<0 ? '' : auth.substring(ci+1);\n"
+"    var pr = h<0 ? '' : rest.substring(h);\n"
+"    var qi = pr.indexOf('?');\n"
+"    var hi = pr.indexOf('#');\n"
+"    var pe = (qi<0) ? ((hi<0)?pr.length:qi) : qi;\n"
+"    this.pathname = (pe===0 && pr.charAt(0)==='/') ? '/' : (pr.substring(0, pe) || '/');\n"
+"    this.search = (qi>=0) ? pr.substring(qi, (hi>=0 && hi>qi ? hi : pr.length)) : '';\n"
+"    this.hash = (hi>=0) ? pr.substring(hi) : '';\n"
+"    if (this.protocol && this.host) this.origin = this.protocol + '//' + this.host;\n"
+"    this.searchParams = new URLSearchParams(this.search);\n"
+"  }\n"
+"  MiniURL.prototype.toString=function(){ return this.href; };\n"
+"  MiniURL.prototype.toJSON=function(){ return this.href; };\n"
+"  MiniURL.createObjectURL=function(blob){ return (blob && typeof __miniCreateObjectURL==='function') ? __miniCreateObjectURL(blob) : ''; };\n"
+"  MiniURL.revokeObjectURL=function(url){ if(url && typeof __miniRevokeObjectURL==='function') __miniRevokeObjectURL(String(url)); };\n"
+"  window.URL = MiniURL; globalThis.URL = MiniURL;\n"
+"} else {\n"
+"  if (typeof URLSearchParams === 'undefined') { globalThis.URLSearchParams = function(){this._d={};}; globalThis.URLSearchParams.prototype.toString=function(){return '';}; }\n"
+"  URL.createObjectURL=function(blob){ return (blob && typeof __miniCreateObjectURL==='function') ? __miniCreateObjectURL(blob) : ''; };\n"
+"  URL.revokeObjectURL=function(url){ if(url && typeof __miniRevokeObjectURL==='function') __miniRevokeObjectURL(String(url)); };\n"
+"}\n"
     "function Blob(parts, options){\n"
     "  options = options || {}; this.type = options.type || '';\n"
     "  var totalLen = 0, bufs = [];\n"
@@ -1005,9 +1063,37 @@ static const char *mini_js_shim =
     "  this.lastModified = options.lastModified || Date.now();\n"
     "  this.webkitRelativePath = options.webkitRelativePath || '';\n"
     "}\n"
-    "File.prototype = Object.create(Blob.prototype); File.prototype.constructor = File;\n"
-    "window.File = File; globalThis.File = File;\n"
-    "function FileReader(){\n"
+"File.prototype = Object.create(Blob.prototype); File.prototype.constructor = File;\n"
+"window.File = File; globalThis.File = File;\n"
+"function FormData(entries){\n"
+"  this._d = {};\n"
+"  if (entries && typeof entries.forEach === 'function') entries.forEach(function(v,k){ this.append(k, v); }, this);\n"
+"}\n"
+"FormData.prototype.append = function(k,v){ k=String(k); (this._d[k]=this._d[k]||[]).push(v); };\n"
+"FormData.prototype.set = function(k,v){ this._d[k]=[v]; };\n"
+"FormData.prototype.get = function(k){ var a=this._d[k]; return a?a[0]:null; };\n"
+"FormData.prototype.getAll = function(k){ return (this._d[k]||[]).slice(); };\n"
+"FormData.prototype.has = function(k){ return !!this._d[k]; };\n"
+"FormData.prototype.delete = function(k){ delete this._d[k]; };\n"
+"FormData.prototype.forEach = function(cb, thisArg){ for(var k in this._d){ this._d[k].forEach(function(v){ cb.call(thisArg, v, k, this); }, this); } };\n"
+"FormData.prototype.entries = function(){ var out=[]; this.forEach(function(v,k){ out.push([k,v]); }); var i=0; var it={ next:function(){ return i<out.length?{value:out[i++],done:false}:{value:undefined,done:true}; } }; if(typeof Symbol!=='undefined') it[Symbol.iterator]=function(){ return it; }; return it; };\n" // close entries
+"FormData.prototype.keys = function(){ var out=[]; this.forEach(function(v,k){ out.push(k); }); var i=0; var it={ next:function(){ return i<out.length?{value:out[i++],done:false}:{value:undefined,done:true}; } }; if(typeof Symbol!=='undefined') it[Symbol.iterator]=function(){ return it; }; return it; };\n"
+"FormData.prototype.values = function(){ var out=[]; this.forEach(function(v){ out.push(v); }); var i=0; var it={ next:function(){ return i<out.length?{value:out[i++],done:false}:{value:undefined,done:true}; } }; if(typeof Symbol!=='undefined') it[Symbol.iterator]=function(){ return it; }; return it; };\n"
+"if (typeof Symbol !== 'undefined' && Symbol.iterator) FormData.prototype[Symbol.iterator] = FormData.prototype.entries;\n"
+"window.FormData = FormData; globalThis.FormData = FormData;\n"
+"function AbortSignal(){ this.aborted = false; this.onabort = null; this._ls = []; }\n"
+"AbortSignal.prototype.addEventListener = function(t,cb){ if(t==='abort' && typeof cb==='function') this._ls.push(cb); };\n"
+"AbortSignal.prototype.removeEventListener = function(t,cb){ if(t!=='abort') return; this._ls = this._ls.filter(function(x){ return x!==cb; }); };\n"
+"AbortSignal.prototype.dispatchEvent = function(e){ if(e && e.type==='abort'){ this.aborted=true; var ls=this._ls.slice(); for(var i=0;i<ls.length;i++){ try{ ls[i](e); }catch(_){} } if(this.onabort) try{ this.onabort(e); }catch(_){} } return true; };\n"
+"function AbortController(){ this.signal = new AbortSignal(); }\n"
+"AbortController.prototype.abort = function(reason){ if(!this.signal.aborted){ var e = { type:'abort', target:this.signal, reason:reason }; this.signal.dispatchEvent(e); } };\n"
+"window.AbortController = AbortController; globalThis.AbortController = AbortController;\n"
+"window.AbortSignal = AbortSignal; globalThis.AbortSignal = AbortSignal;\n"
+"if (typeof queueMicrotask === 'undefined') globalThis.queueMicrotask = function(cb){ Promise.resolve().then(cb); };\n"
+"if (typeof structuredClone === 'undefined') globalThis.structuredClone = function(v){ return JSON.parse(JSON.stringify(v)); };\n"
+"if (typeof atob === 'undefined') globalThis.atob = function(s){ return s; };\n"
+"if (typeof btoa === 'undefined') globalThis.btoa = function(s){ return s; };\n"
+"function FileReader(){\n"
     "  this.result = null; this.error = null; this.readyState = 0;\n"
     "  this.onload = null; this.onerror = null; this.onloadend = null;\n"
     "}\n"
@@ -1112,6 +1198,21 @@ static const char *mini_js_shim =
        are not interned. */
     /* HTMLElement alias so `instanceof HTMLElement` works. */
     "window.HTMLElement = MiniElement;\n"
+    /* Concrete HTML*Element constructors. React (and other libs) do
+       `el instanceof window.HTMLIFrameElement` / `HTMLInputElement` / ...; if
+       those globals are undefined, `instanceof` throws "invalid instanceof
+       right operand". Each gets its OWN prototype (inheriting MiniElement) so
+       `el instanceof HTMLIFrameElement` is a valid check that returns false
+       for a non-iframe element (correct) rather than crashing. */
+    "(function(){\n"
+    "  var names=['HTMLAnchorElement','HTMLAreaElement','HTMLAudioElement','HTMLBaseElement','HTMLBodyElement','HTMLBRElement','HTMLButtonElement','HTMLCanvasElement','HTMLDataElement','HTMLDataListElement','HTMLDetailsElement','HTMLDialogElement','HTMLDirectoryElement','HTMLDivElement','HTMLDListElement','HTMLElement','HTMLEmbedElement','HTMLFieldSetElement','HTMLFontElement','HTMLFormElement','HTMLFrameElement','HTMLFrameSetElement','HTMLHeadElement','HTMLHeadingElement','HTMLHRElement','HTMLHtmlElement','HTMLIFrameElement','HTMLImageElement','HTMLInputElement','HTMLLabelElement','HTMLLegendElement','HTMLLIElement','HTMLLinkElement','HTMLMapElement','HTMLMarqueeElement','HTMLMediaElement','HTMLMenuElement','HTMLMetaElement','HTMLMeterElement','HTMLModElement','HTMLOListElement','HTMLObjectElement','HTMLOptGroupElement','HTMLOptionElement','HTMLOutputElement','HTMLParagraphElement','HTMLParamElement','HTMLPictureElement','HTMLPreElement','HTMLProgressElement','HTMLQuoteElement','HTMLScriptElement','HTMLSelectElement','HTMLSlotElement','HTMLSourceElement','HTMLSpanElement','HTMLStyleElement','HTMLTableCaptionElement','HTMLTableCellElement','HTMLTableColElement','HTMLTableElement','HTMLTableRowElement','HTMLTableSectionElement','HTMLTemplateElement','HTMLTextAreaElement','HTMLTimeElement','HTMLTitleElement','HTMLTrackElement','HTMLUListElement','HTMLUnknownElement','HTMLVideoElement','SVGElement','SVGSVGElement'];\n"
+    "  for (var i=0;i<names.length;i++){\n"
+    "    var C=function(){};\n"
+    "    C.prototype=Object.create(MiniElement.prototype);\n"
+    "    C.prototype.constructor=C;\n"
+    "    window[names[i]]=C; globalThis[names[i]]=C;\n"
+    "  }\n"
+    "})();\n"
     /* getComputedStyle: parse the C _computedStyleJSON into a CSSStyleDeclaration-ish object. */
     "window.getComputedStyle = function(el){\n"
     "  var s={}; var raw=(el && el._computedStyleJSON) ? el._computedStyleJSON() : '[]';\n"
@@ -1524,6 +1625,21 @@ typedef struct
     JSValue js_target;
 } JsEvListener;
 
+/* A DOM node's JS wrapper is cached on the node as a MiniNodeWrapper. The
+   `bridge` back-pointer records WHICH MiniBridge/JSContext owns the JSValue,
+   so when the node is destroyed outside of any JS call (e.g. during DOM
+   teardown) we can free the JSValue with the correct context. This removes
+   the old reliance on a single global "active bridge" pointer, which would
+   free JSValues with the wrong context under multi-window (one runtime per
+   window) and corrupt the heap. Pointer to an incomplete type is fine here:
+   MiniBridge is fully defined just below, and we only dereference `bridge`
+   in functions that appear after that definition. */
+typedef struct MiniNodeWrapper
+{
+    struct MiniBridge *bridge;
+    JSValue val;
+} MiniNodeWrapper;
+
 typedef struct MiniBridge
 {
     JSRuntime *rt;
@@ -1570,7 +1686,7 @@ typedef struct MiniBridge
     char *doc_url; /* page URL (file:// for local); base for relative imports */
     struct MiniNode *locked_node;
 
-    JSValue **all_wrappers;
+    MiniNodeWrapper **all_wrappers; /* per-node JS wrappers, owner-tracked   */
     int all_wrappers_n, all_wrappers_cap;
 
     /* native/OS layer (mini_native.c): CommonJS require built-in module
@@ -1580,6 +1696,25 @@ typedef struct MiniBridge
     int children_n, children_cap;
     char **argv;                  /* main()'s argv (process.argv source) */
     int argc;
+
+    /* Multi-window: this bridge's owning window id. 0 = the main process
+       (primary) context; >0 = a renderer (secondary-window) context. Used by
+       the IPC registry to route messages between the main context and each
+       renderer. Set via mini_bridge_set_window_id(). */
+    int window_id;
+
+    /* The MiniApp host (main process) for the main/primary bridge, so the
+       BrowserWindow constructor (in the main context) can reach the host to
+       create secondary windows. NULL on renderer bridges. */
+    void *host;
+
+    /* The process-wide MiniIPC registry (set by mini_ipc_install). Lets the
+       IPC native functions reach the shared mailbox from any bridge. */
+    void *ipc;
+
+    /* The process-wide MiniProtocol registry (main bridge only) for custom
+       scheme handlers consulted by BrowserWindow.loadURL. */
+    void *proto;
 
     /* background I/O worker pool (mini_worker.c): fs.readFile/writeFile +
        fetch run off the render thread; main thread pumps results here. */
@@ -1601,15 +1736,26 @@ static void js_el_finalizer(JSRuntime *rt, JSValue val)
 }
 
 /* ---- helpers ---- */
+/* Last-resort active bridge for the (now rare) paths that don't have a
+   node wrapper to recover the owning bridge from. The run loop sets this to
+   the window currently being processed, so it is correct for any node torn
+   down during that window's pump/render/eval. */
 static MiniBridge *g_active_js_bridge = NULL;
 
 void mini_bridge_on_node_destroyed(struct MiniNode *n)
 {
     if (!n)
         return;
-    if (g_active_js_bridge)
+    /* Recover the owning bridge from the node's JS wrapper. The wrapper is
+       created in wrap_node() with the bridge that owns the context, so this
+       is the correct context to free its JSValue/listeners with — independent
+       of which window is "active" right now (critical for multi-window, where
+       each window has its own JSRuntime and a JSValue must be freed by the
+       context that created it). */
+    MiniNodeWrapper *w = n->js_wrapper ? (MiniNodeWrapper *)n->js_wrapper : NULL;
+    MiniBridge *b = w ? w->bridge : g_active_js_bridge;
+    if (b)
     {
-        MiniBridge *b = g_active_js_bridge;
         for (int i = 0; i < b->ev_listeners_n; )
         {
             JsEvListener *L = b->ev_listeners[i];
@@ -1630,24 +1776,31 @@ void mini_bridge_on_node_destroyed(struct MiniNode *n)
             }
         }
     }
-    if (n->js_wrapper)
+    if (w)
     {
-        JSValue *v = (JSValue *)n->js_wrapper;
-        if (g_active_js_bridge && g_active_js_bridge->ctx)
+        if (b && b->ctx)
         {
-            JS_SetOpaque(*v, NULL);
-            JS_FreeValue(g_active_js_bridge->ctx, *v);
+            JS_SetOpaque(w->val, NULL);
+            JS_FreeValue(b->ctx, w->val);
 
-            for (int i = 0; i < g_active_js_bridge->all_wrappers_n; i++) {
-                if (g_active_js_bridge->all_wrappers[i] == v) {
-                    g_active_js_bridge->all_wrappers[i] = NULL;
+            for (int i = 0; i < b->all_wrappers_n; i++) {
+                if (b->all_wrappers[i] == w) {
+                    b->all_wrappers[i] = NULL;
                 }
             }
         }
-        free(v);
+        free(w);
         n->js_wrapper = NULL;
     }
 }
+
+/* Set/get the process-wide "active bridge" — the bridge whose JSContext is
+   the fallback owner for nodes torn down outside a wrapper/JS call. The host
+   run loop switches this to the window currently being pumped/rendered so it
+   is always correct for that window. (The wrapper back-pointer in
+   MiniNodeWrapper is the primary owner; this is the fallback.) */
+void mini_bridge_set_active(MiniBridge *b) { g_active_js_bridge = b; }
+MiniBridge *mini_bridge_get_active(void) { return g_active_js_bridge; }
 
 static MiniBridge *bridge_of(JSContext *ctx)
 {
@@ -1690,6 +1843,46 @@ struct MiniRenderer *mini_bridge_renderer(struct MiniBridge *b)
 {
     return b ? b->r : NULL;
 }
+
+/* Multi-window: this bridge's owning window id (0=main, >0=renderer). Used by
+   the IPC registry to route messages between the main context and each
+   renderer. Set by the window manager when a renderer is created. */
+void mini_bridge_set_window_id(MiniBridge *b, int id)
+{
+    if (b)
+        b->window_id = id;
+}
+int mini_bridge_get_window_id(MiniBridge *b)
+{
+    return b ? b->window_id : 0;
+}
+
+/* The MiniApp host pointer (main bridge only) so the BrowserWindow constructor
+   in the main context can reach the host to create secondary windows. */
+void mini_bridge_set_host(MiniBridge *b, void *host)
+{
+    if (b)
+        b->host = host;
+}
+void *mini_bridge_get_host(MiniBridge *b)
+{
+    return b ? b->host : NULL;
+}
+
+/* The process-wide MiniIPC registry pointer (set by mini_ipc_install). */
+void mini_bridge_set_ipc(MiniBridge *b, void *ipc)
+{
+    if (b)
+        b->ipc = ipc;
+}
+void *mini_bridge_get_ipc(MiniBridge *b)
+{
+    return b ? b->ipc : NULL;
+}
+
+/* The process-wide MiniProtocol registry pointer (main bridge only). */
+void mini_bridge_set_proto(MiniBridge *b, void *proto) { if (b) b->proto = proto; }
+void *mini_bridge_get_proto(MiniBridge *b) { return b ? b->proto : NULL; }
 
 struct MiniWorkerQueue *mini_bridge_workers(struct MiniBridge *b)
 {
@@ -1748,23 +1941,24 @@ static JSValue wrap_node(JSContext *ctx, struct MiniNode *n, JSClassID cid)
         return JS_NULL;
     if (n->js_wrapper)
     {
-        JSValue *cached = (JSValue *)n->js_wrapper;
-        return JS_DupValue(ctx, *cached);
+        MiniNodeWrapper *cached = (MiniNodeWrapper *)n->js_wrapper;
+        return JS_DupValue(ctx, cached->val);
     }
     JSValue obj = JS_NewObjectClass(ctx, cid);
     if (JS_IsException(obj))
         return obj;
     JS_SetOpaque(obj, n);
-    JSValue *saved = (JSValue *)malloc(sizeof(JSValue));
+    MiniNodeWrapper *saved = (MiniNodeWrapper *)malloc(sizeof(MiniNodeWrapper));
     if (saved)
     {
-        *saved = JS_DupValue(ctx, obj);
+        saved->bridge = b;                 /* owner context for later free   */
+        saved->val = JS_DupValue(ctx, obj);
         n->js_wrapper = saved;
 
         if (b) {
             if (b->all_wrappers_n >= b->all_wrappers_cap) {
                 int nc = b->all_wrappers_cap ? b->all_wrappers_cap * 2 : 1024;
-                JSValue **nw = (JSValue **)realloc(b->all_wrappers, nc * sizeof(JSValue *));
+                MiniNodeWrapper **nw = (MiniNodeWrapper **)realloc(b->all_wrappers, nc * sizeof(MiniNodeWrapper *));
                 if (nw) { b->all_wrappers = nw; b->all_wrappers_cap = nc; }
             }
             if (b->all_wrappers_n < b->all_wrappers_cap) {
@@ -1778,6 +1972,43 @@ static JSValue wrap_node(JSContext *ctx, struct MiniNode *n, JSClassID cid)
 static struct MiniNode *el_this(JSContext *ctx, JSValueConst this_val, JSClassID cid)
 {
     return (struct MiniNode *)JS_GetOpaque2(ctx, this_val, cid);
+}
+
+/* Resolve a <script src> against the page URL. If `src` is already http(s),
+   copy it to `out`. If the page (b->doc_url) is http(s) and `src` is a relative
+   or absolute-path URL (e.g. "/static/js/x.js"), resolve it to a full http(s)
+   URL. Otherwise (page is file:// / no base) return 0 so the caller treats src
+   as a local file. This is what makes a remote SPA's <script src="/assets/..">
+   actually fetch from the site instead of failing on fopen("/assets/.."). */
+static int script_resolve_url(MiniBridge *b, const char *src, char *out, size_t outcap)
+{
+    if (!src || !src[0] || !out || outcap == 0)
+        return 0;
+    if (!strncmp(src, "http://", 7) || !strncmp(src, "https://", 8))
+    { snprintf(out, outcap, "%s", src); return 1; }
+    const char *base = (b && b->doc_url) ? b->doc_url : NULL;
+    if (!base || (strncmp(base, "http://", 7) && strncmp(base, "https://", 8)))
+        return 0; /* no http(s) base → treat as a local file path */
+    const char *sp = strstr(base, "://");
+    const char *host = sp ? sp + 3 : base;
+    const char *p = host;
+    while (*p && *p != '/' && *p != '?' && *p != '#') p++;
+    size_t olen = (size_t)(p - base); /* scheme://host[:port] */
+    if (src[0] == '/' && src[1] == '/')
+    {
+        /* protocol-relative //host/path → scheme + ":" + src */
+        size_t sl = sp ? (size_t)(sp - base) : 4;
+        snprintf(out, outcap, "%.*s:%s", (int)sl, base, src);
+    }
+    else if (src[0] == '/')
+    {
+        snprintf(out, outcap, "%.*s%s", (int)olen, base, src);
+    }
+    else
+    {
+        snprintf(out, outcap, "%.*s/%s", (int)olen, base, src);
+    }
+    return 1;
 }
 
 static void maybe_execute_script(MiniBridge *b, struct MiniNode *child, JSValueConst child_val)
@@ -1826,11 +2057,12 @@ static void maybe_execute_script(MiniBridge *b, struct MiniNode *child, JSValueC
 
     if (src && src[0])
     {
-        if (!strncmp(src, "http://", 7) || !strncmp(src, "https://", 8))
+        char fullurl[1100];
+        if (script_resolve_url(b, src, fullurl, sizeof fullurl))
         {
             MiniNetRecord rec;
             memset(&rec, 0, sizeof rec);
-            if (mini_net_fetch("GET", src, NULL, NULL, 0, NULL, &rec) == 0 && rec.resp_body)
+            if (mini_net_fetch("GET", fullurl, NULL, NULL, 0, NULL, &rec) == 0 && rec.resp_body)
             {
                 code = rec.resp_body;
                 code_len = rec.resp_body_len;
@@ -8594,6 +8826,24 @@ static void bridge_pump_websockets(MiniBridge *b)
 
 MiniBridge *mini_bridge_create(MiniRenderer *r, MiniDocument *doc)
 {
+    return mini_bridge_create_ex(r, doc, 0);
+}
+
+/* Create a renderer (secondary-window) bridge: same browser globals (DOM,
+ * fetch, WebGL, WebSocket, storage, rAF/timers, require shim) as the main
+ * bridge, but WITHOUT the Node/Electron main-process modules (no app /
+ * BrowserWindow / ipcMain / os / fs / child_process — Electron-correct for a
+ * renderer). Instead a renderer-scoped `electron` object (ipcRenderer /
+ * contextBridge / webFrame / crashReporter) is installed by mini_native.c.
+ * Each renderer gets its own JSRuntime, so windows are fully isolated: a
+ * global in one window is invisible to another, and ipc is the only channel. */
+MiniBridge *mini_bridge_create_child(MiniRenderer *r, MiniDocument *doc)
+{
+    return mini_bridge_create_ex(r, doc, 1);
+}
+
+MiniBridge *mini_bridge_create_ex(MiniRenderer *r, MiniDocument *doc, int is_renderer)
+{
     MiniBridge *b = (MiniBridge *)calloc(1, sizeof(*b));
     if (!b)
         return NULL;
@@ -8609,6 +8859,11 @@ MiniBridge *mini_bridge_create(MiniRenderer *r, MiniDocument *doc)
     }
     JS_SetMemoryLimit(b->rt, 512 * 1024 * 1024); /* 512 MB heap cap */
     JS_SetMaxStackSize(b->rt, 16 * 1024 * 1024); /* 16 MB stack */
+    /* Leak probe: when TINY_DUMP_LEAKS is set in the environment, enable
+       QuickJS's built-in leak dump (JS_DUMP_LEAKS) so JS_FreeRuntime prints
+       every leaked object before the list_empty(&rt->gc_obj_list) assert. */
+    if (getenv("TINY_DUMP_LEAKS"))
+        JS_SetDumpFlags(b->rt, JS_DUMP_LEAKS);
     b->ctx = JS_NewContext(b->rt);
     if (!b->ctx)
     {
@@ -8730,8 +8985,14 @@ MiniBridge *mini_bridge_create(MiniRenderer *r, MiniDocument *doc)
     b->workers = mini_worker_init(2);
 
     /* OS/electron-style modules + global process (mini_native.c). Runs
-       before the shim eval so require()/process exist when shim code runs. */
-    install_native(b);
+       before the shim eval so require()/process exist when shim code runs.
+       Renderer (secondary-window) contexts get a renderer-scoped electron
+       (ipcRenderer/contextBridge/...) instead of the full main-process
+       surface, matching Electron's main/renderer split. */
+    if (is_renderer)
+        install_renderer_electron(b);
+    else
+        install_native(b);
 
     /* window (plain object) */
     JSValue win = JS_DupValue(b->ctx, global);
@@ -8893,9 +9154,9 @@ static void free_node_wrappers_rec(JSContext *ctx, struct MiniNode *n)
         return;
     if (n->js_wrapper)
     {
-        JSValue *v = (JSValue *)n->js_wrapper;
-        JS_FreeValue(ctx, *v);
-        free(v);
+        MiniNodeWrapper *w = (MiniNodeWrapper *)n->js_wrapper;
+        JS_FreeValue(ctx, w->val);
+        free(w);
         n->js_wrapper = NULL;
     }
     for (struct MiniNode *c = n->first_child; c; c = c->next_sibling)
@@ -8911,10 +9172,10 @@ void mini_bridge_destroy(MiniBridge *b)
     if (g_active_js_bridge == b)
         g_active_js_bridge = NULL;
 
-    /* 0. Join any in-flight parallel prefetch threads before tearing down —
-       they only touch the (mutex-protected) HTTP cache, not the JS runtime,
-       but must finish so their cache writes land before the process exits. */
-    mini_net_prefetch_shutdown();
+    /* NOTE: mini_net_prefetch_shutdown() is process-global and must run ONCE
+       at process exit (mini_app_destroy calls it before destroying any bridge).
+       It used to be called per-bridge here, which deadlocked when multiple
+       bridges (one per secondary window) each re-entered ka_shutdown_all(). */
 
     /* 1. 释放 rAF 队列中的 JS 回调 */
     for (int i = 0; i < b->raf_n; i++)
@@ -8949,15 +9210,15 @@ void mini_bridge_destroy(MiniBridge *b)
     /* 4. 核心修复：在释放 Context 之前，彻底解开所有 DOM 节点缓存的 JSValue */
     for (int i = 0; i < b->all_wrappers_n; i++)
     {
-        JSValue *v = b->all_wrappers[i];
-        if (v)
+        MiniNodeWrapper *w = b->all_wrappers[i];
+        if (w)
         {
-            struct MiniNode *n = (struct MiniNode *)JS_GetOpaque(*v, b->el_cid);
-            if (n && n->js_wrapper == v)
+            struct MiniNode *n = (struct MiniNode *)JS_GetOpaque(w->val, b->el_cid);
+            if (n && n->js_wrapper == w)
                 n->js_wrapper = NULL;
-            JS_SetOpaque(*v, NULL);
-            JS_FreeValue(b->ctx, *v);
-            free(v);
+            JS_SetOpaque(w->val, NULL);
+            JS_FreeValue(b->ctx, w->val);
+            free(w);
         }
     }
     free(b->all_wrappers);
@@ -9523,7 +9784,11 @@ static void eval_scripts(struct MiniNode *n, MiniBridge *b)
     {
         const char *type = mini_node_get_attribute(n, "type");
         const char *src = mini_node_get_attribute(n, "src");
-        int is_remote = src && (!strncmp(src, "http://", 7) || !strncmp(src, "https://", 8));
+        /* Resolve relative/absolute-path src against the page URL so a remote
+           page's <script src="/assets/x.js"> fetches from the site, not fopen. */
+        char fullurl[1100];
+        int is_remote = src && src[0] && script_resolve_url(b, src, fullurl, sizeof fullurl);
+        const char *remote_src = is_remote ? fullurl : src;
         int is_local_src = src && src[0] && !is_remote;
 
         const char *script_text = n->text;
@@ -9541,10 +9806,10 @@ static void eval_scripts(struct MiniNode *n, MiniBridge *b)
             {
                 MiniNetRecord rec;
                 memset(&rec, 0, sizeof rec);
-                mini_net_prefetch_await(src);
-                if (mini_net_fetch("GET", src, NULL, NULL, 0, NULL, &rec) == 0 && rec.resp_body)
+                mini_net_prefetch_await(remote_src);
+                if (mini_net_fetch("GET", remote_src, NULL, NULL, 0, NULL, &rec) == 0 && rec.resp_body)
                 {
-                    mini_bridge_eval_module(b, rec.resp_body, rec.resp_body_len, src);
+                    mini_bridge_eval_module(b, rec.resp_body, rec.resp_body_len, remote_src);
                     mini_net_record_add(&rec);
                 }
             }
@@ -9582,10 +9847,10 @@ static void eval_scripts(struct MiniNode *n, MiniBridge *b)
             {
                 MiniNetRecord rec;
                 memset(&rec, 0, sizeof rec);
-                mini_net_prefetch_await(src);
-                if (mini_net_fetch("GET", src, NULL, NULL, 0, NULL, &rec) == 0 && rec.resp_body)
+                mini_net_prefetch_await(remote_src);
+                if (mini_net_fetch("GET", remote_src, NULL, NULL, 0, NULL, &rec) == 0 && rec.resp_body)
                 {
-                    mini_bridge_eval(b, rec.resp_body, rec.resp_body_len, src);
+                    mini_bridge_eval(b, rec.resp_body, rec.resp_body_len, remote_src);
                     mini_net_record_add(&rec);
                 }
             }

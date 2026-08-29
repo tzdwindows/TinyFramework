@@ -1478,6 +1478,19 @@ float mini_text_line_height(float font_size)
 MiniRenderer *mini_renderer_create(int width, int height,
                                    int samples, int vsync)
 {
+    /* Primary window: default hints (decorated, opaque, resizable). */
+    return mini_renderer_create_window(width, height, samples, vsync, NULL);
+}
+
+/* Build a MiniRenderer around a freshly-created GLFW window + GL context.
+   Shared by the primary and secondary creation paths. NEVER calls
+   glfwTerminate on failure — that would destroy every window in the
+   process (fatal for multi-window, where a failed Nth window must not
+   tear down windows 1..N-1). The caller owns the GLFW init/terminate
+   lifecycle (mini_renderer_terminate_glfw at process exit). */
+MiniRenderer *mini_renderer_create_window(int width, int height, int samples,
+                                          int vsync, const MiniRendererHints *hints)
+{
     /* Become DPI-aware before the window is created so the GL framebuffer is
        at device resolution (no DWM bitmap upscale -> crisp on high-DPI). */
     mini_set_dpi_aware();
@@ -1490,15 +1503,27 @@ MiniRenderer *mini_renderer_create(int width, int height,
     glfwWindowHint(GLFW_SAMPLES, samples > 0 ? samples : 8);
     glfwWindowHint(GLFW_STENCIL_BITS, 8);
     glfwWindowHint(GLFW_DEPTH_BITS, 24);
-    glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+    /* Window-style hints (BrowserWindow frame/transparent/resizable/...). The
+       defaults reproduce the legacy primary-window behaviour. */
+    glfwWindowHint(GLFW_RESIZABLE,
+                   (!hints || hints->resizable != 0) ? GLFW_TRUE : GLFW_FALSE);
+    glfwWindowHint(GLFW_DECORATED,
+                   (!hints || hints->decorated != 0) ? GLFW_TRUE : GLFW_FALSE);
+    glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER,
+                   (hints && hints->transparent) ? GLFW_TRUE : GLFW_FALSE);
+    glfwWindowHint(GLFW_FLOATING,
+                   (hints && hints->always_on_top) ? GLFW_TRUE : GLFW_FALSE);
+    if (hints && hints->maximized)
+        glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE);
+
+    GLFWmonitor *mon = NULL;
+    if (hints && hints->fullscreen)
+        mon = glfwGetPrimaryMonitor();
 
     GLFWwindow *win = glfwCreateWindow(width, height,
-                                       "TinyFramework", NULL, NULL);
+                                       "TinyFramework", mon, NULL);
     if (!win)
-    {
-        glfwTerminate();
-        return NULL;
-    }
+        return NULL; /* do NOT glfwTerminate here (multi-window safe) */
     glfwMakeContextCurrent(win);
     if (vsync)
         glfwSwapInterval(1);
@@ -1523,8 +1548,7 @@ MiniRenderer *mini_renderer_create(int width, int height,
     if (!r)
     {
         glfwDestroyWindow(win);
-        glfwTerminate();
-        return NULL;
+        return NULL; /* do NOT glfwTerminate here (multi-window safe) */
     }
 
     r->gpu.window_handle = win;
@@ -1604,11 +1628,17 @@ void mini_renderer_destroy(MiniRenderer *r)
             glDeleteTextures(1, &r->grad_cache[i].tex);
     mini_gl_bridge_destroy(r->gl_state);
     if (r->gpu.window_handle)
-    {
         glfwDestroyWindow((GLFWwindow *)r->gpu.window_handle);
-        glfwTerminate();
-    }
     free(r);
+}
+
+/* Tear down GLFW process-wide. Call once, after every MiniRenderer has been
+   destroyed (e.g. at mini_app_destroy, after all windows are closed). We do
+   NOT glfwTerminate inside mini_renderer_destroy because that would destroy
+   every other live window in a multi-window app. */
+void mini_renderer_terminate_glfw(void)
+{
+    glfwTerminate();
 }
 
 /* ------------------------------------------------------------------ */

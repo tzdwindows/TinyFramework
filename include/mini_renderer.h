@@ -233,8 +233,31 @@ extern "C"
     /* ------------------------------------------------------------------ */
     /* Lifecycle                                                          */
     /* ------------------------------------------------------------------ */
+
+    /* Hints for creating a secondary window's renderer (multi-window). All
+       "default" = -1/0 means "behave like the primary". Used by the
+       BrowserWindow constructor to honour frame/transparent/resizable/
+       alwaysOnTop/fullscreen options. */
+    typedef struct MiniRendererHints
+    {
+        int decorated;       /* 1=with title bar, 0=frameless (frame:false) */
+        int transparent;      /* 1=transparent framebuffer (transparent:true) */
+        int resizable;        /* 1=user-resizable */
+        int always_on_top;    /* 1=always-on-top (floating) */
+        int fullscreen;       /* 1=open fullscreen */
+        int maximized;        /* 1=open maximized */
+    } MiniRendererHints;
+
+    /* Create the primary renderer + its GLFW window (owns the GLFW lifetime). */
     MiniRenderer *mini_renderer_create(int width, int height, int samples, int vsync);
+    /* Create a secondary renderer + its own independent GLFW window/GL context
+       for an additional BrowserWindow. NEVER calls glfwTerminate on failure
+       (glfwTerminate would tear down every window in the process). */
+    MiniRenderer *mini_renderer_create_window(int width, int height, int samples,
+                                              int vsync, const MiniRendererHints *hints);
     void mini_renderer_destroy(MiniRenderer *r);
+    /* Tear down GLFW process-wide (call once after every renderer is gone). */
+    void mini_renderer_terminate_glfw(void);
 
     /* Per-frame entry/exit (called by the main loop). */
     void mini_renderer_begin_frame(MiniRenderer *r);

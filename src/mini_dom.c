@@ -255,6 +255,22 @@ static MiniDocumentContext *mini_get_ctx(MiniDocument *doc)
     return &g_fallback_ctx;
 }
 
+/* Set the process-wide "active document" — the document whose
+   MiniDocumentContext backs the g_* / g2d_* macros above. The engine is
+   single-threaded and processes one window at a time, so the host run loop
+   calls this before laying out / styling / rendering / firing rAF for a
+   given window (and restores the primary afterward). Without it, every
+   window would render against the first document's context. */
+void mini_dom_set_active_doc(MiniDocument *doc)
+{
+    g_active_doc = doc;
+}
+
+MiniDocument *mini_dom_get_active_doc(void)
+{
+    return g_active_doc;
+}
+
 #define g_anim_time (mini_get_ctx(g_active_doc)->anim_time_sec)
 #define g_restyling (mini_get_ctx(g_active_doc)->is_restyling_active)
 #define g_render_events (mini_get_ctx(g_active_doc)->render_events_st)

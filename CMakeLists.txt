@@ -102,6 +102,9 @@ set(CORE_SRC
         src/mini_audio.c
         src/mini_native.c
         src/mini_worker.c
+        src/mini_window.c
+        src/mini_ipc.c
+        src/mini_protocol.c
 )
 
 # Windows 图标/版本资源文件编译

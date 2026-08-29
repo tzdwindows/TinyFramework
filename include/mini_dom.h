@@ -510,6 +510,13 @@ extern "C"
    MiniDocument *mini_doc_create(void);
    void mini_doc_destroy(MiniDocument *doc);
 
+   /* Set/get the process-wide "active document" — the document whose
+      MiniDocumentContext backs the file-scope g_* / g2d_* macros. The host
+      run loop switches this per-window before rendering each window
+      (single-threaded engine; only one window is active at a time). */
+   void mini_dom_set_active_doc(MiniDocument *doc);
+   MiniDocument *mini_dom_get_active_doc(void);
+
    struct MiniNode *mini_node_create_element(const char *tag);
    struct MiniNode *mini_node_create_text(const char *data);
    void mini_node_destroy(struct MiniNode *n);
