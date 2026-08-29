@@ -6334,12 +6334,20 @@ static void layout_node(struct MiniNode *n, float x, float y,
                         if (row)
                         {
                             c->style.w += grow;
+                            MiniLength old_w = c->style.len_w;
+                            c->style.len_w.v = c->style.w;
+                            c->style.len_w.unit = 11;
                             layout_node(c, s->abs_x + s->padding[3], s->abs_y + s->padding[0], c->style.w, cross);
+                            c->style.len_w = old_w;
                         }
                         else
                         {
                             c->style.h += grow;
+                            MiniLength old_h = c->style.len_h;
+                            c->style.len_h.v = c->style.h;
+                            c->style.len_h.unit = 11;
                             layout_node(c, s->abs_x + s->padding[3], s->abs_y + s->padding[0], cross, c->style.h);
+                            c->style.len_h = old_h;
                         }
                     }
                 }
@@ -6360,14 +6368,22 @@ static void layout_node(struct MiniNode *n, float x, float y,
                         c->style.w -= reduction;
                         if (c->style.w < 0.0f)
                             c->style.w = 0.0f;
+                        MiniLength old_w = c->style.len_w;
+                        c->style.len_w.v = c->style.w;
+                        c->style.len_w.unit = 11;
                         layout_node(c, s->abs_x + s->padding[3], s->abs_y + s->padding[0], c->style.w, cross);
+                        c->style.len_w = old_w;
                     }
                     else
                     {
                         c->style.h -= reduction;
                         if (c->style.h < 0.0f)
                             c->style.h = 0.0f;
+                        MiniLength old_h = c->style.len_h;
+                        c->style.len_h.v = c->style.h;
+                        c->style.len_h.unit = 11;
                         layout_node(c, s->abs_x + s->padding[3], s->abs_y + s->padding[0], cross, c->style.h);
+                        c->style.len_h = old_h;
                     }
                 }
                 leftover = 0.0f;
@@ -6492,7 +6508,15 @@ static void layout_node(struct MiniNode *n, float x, float y,
                     float ny = final_y;
                     if (c->first_child)
                     {
+                        MiniLength old_w = c->style.len_w;
+                        MiniLength old_h = c->style.len_h;
+                        c->style.len_w.v = c->style.w;
+                        c->style.len_w.unit = 11;
+                        c->style.len_h.v = c->style.h;
+                        c->style.len_h.unit = 11;
                         layout_node(c, nx, ny, c->style.w, c->style.h);
+                        c->style.len_w = old_w;
+                        c->style.len_h = old_h;
                     }
                     else
                     {
@@ -7506,7 +7530,18 @@ static void render_form_control(struct MiniNode *n, MiniRenderer *r)
             mini_draw_rect_stroke(r, x, y, w, h, 1.0f, 0.4f, 0.4f, 0.4f, 0.9f);
         }
 
-        const char *tval = (n->text && n->text[0]) ? n->text : mini_node_get_attribute(n, "value");
+        const char *attr_val = mini_node_get_attribute(n, "value");
+        const char *tval = attr_val;
+        char tb[8192] = {0};
+        if (!tval && n->text && n->text[0]) {
+            tval = n->text;
+        } else if (!tval) {
+            size_t o = 0;
+            collect_text_content(n, tb, sizeof(tb), &o);
+            tb[o < sizeof(tb) ? o : sizeof(tb) - 1] = 0;
+            tval = tb;
+        }
+
         float fs = s->font_size > 0.0f ? s->font_size : 12.0f;
         if (tval && tval[0])
         {
@@ -10423,7 +10458,7 @@ static void render_node(struct MiniNode *n, MiniRenderer *r)
             mini_renderer_push_clip(r, s->abs_x, s->abs_y, s->w, s->h);
     }
 
-    if (!is_svg)
+    if (!is_svg && !(n->tag && (!strcmp(n->tag, "textarea") || !strcmp(n->tag, "select"))))
     {
         if (n->shadow_root)
         {
